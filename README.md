@@ -1,22 +1,23 @@
 # VLOG-VLA
 
-Persistent Value-Guided Latent Option Graphs for Vision-Language-Action Models.
+Persistent Value-Guided Latent Option Graphs for StarVLA.
 
-This repository contains the VLOG-VLA prototype integrated with StarVLA/QwenOFT. VLOG-VLA inserts a persistent latent option graph between pretrained VLA hidden tokens and the action head. Options are automatically discovered latent codes from demonstration trajectories, not manually named skills, language subgoals, or text tokens.
+This repository is a clean VLOG-VLA overlay for an already working StarVLA setup. It is intended for the workflow where a new machine already has the StarVLA environment, Qwen/StarVLA checkpoint, and LIBERO dependencies installed. After cloning this repo, you can install it with `pip`, run the VLOG unit tests, run synthetic smoke experiments, and then point the config to the real StarVLA checkpoint/LIBERO JSONL data for the real hidden-token experiment.
 
-## What Is Included
+## Repository Layout
 
-- Core VLOG modules in `starVLA/model/vlog_vla/`
-- QwenOFT integration via `QwenOFTVLOG`
-- Real LIBERO JSONL trajectory-window loaders
-- Real StarVLA hidden-token adapter and Stage 7 integration surface
-- Stage 1-6 smoke training scripts
-- Stage 7 real-hidden training/probing scripts
-- Official policy-server compatibility hooks for `vlog_info`
-- Tests for module shapes, option-level critic, hidden extraction, no-surrogate Stage 7, and official eval interface
-- Detailed implementation reports
+```text
+starVLA/model/vlog_vla/                 Core VLOG modules
+starVLA/model/framework/VLM4A/          QwenOFTVLOG integration shim
+scripts/vlog_vla/                       Training, probing, and analysis scripts
+configs/vlog_vla/                       Stage 1-7 experiment configs
+deployment/model_server/                Policy-server compatibility wrapper
+examples/LIBERO/                        Example train/eval shell entrypoints
+tests/                                  VLOG tests
+tools/                                  Dataset/path helper tools
+```
 
-## Key Design
+## Model Structure
 
 ```text
 image + instruction + robot state
@@ -43,37 +44,44 @@ original StarVLA action head
 action chunk
 ```
 
-VLOG components:
+The VLOG option layer uses latent option codes discovered from trajectories. Options are not manual skill labels, text subgoals, or language tokens.
 
-- `StateAggregator`: pools VLA hidden tokens into compact state features.
-- `LatentOptionCodebook`: VQ latent option codes.
-- `PosteriorOptionEncoder`: uses future action windows during training only.
-- `OptionGraphLayer`: state-conditioned option transition graph.
-- `PersistentOptionRouter`: routes over latent options.
-- `OptionCritic`: learns `Q(s,o)` only, not `Q(s,a)`.
-- `TerminationHead`: predicts option termination probability `beta(s,o)`.
-- `OptionAdapter`: zero-initialized adapter so initial insertion preserves base behavior.
+## New Machine Setup
 
-## Current Status
+The commands below assume:
 
-Implemented and tested:
+- Your conda environment is named `vlog_vla`.
+- StarVLA itself has already been installed and tested on the machine.
+- `torch` is already installed in the StarVLA-compatible CUDA version for this machine.
+- You are cloning this repo as the VLOG experiment codebase.
 
-- Stage 1-6 VLOG smoke workflow
-- Real LIBERO-Spatial JSONL state/action window training for Stage 1/2
-- Stage 7 real StarVLA hidden-token extraction interface
-- `QwenOFTVLOG` registry bridge
-- Official policy-server `vlog_info` passthrough
-
-Validation before upload:
-
-```text
-16 passed
-```
-
-Test command:
+Clone:
 
 ```bash
-conda run -n starVLA pytest \
+git clone -b feature/vlog-vla-stage7-real-starvla https://github.com/eee336/vlog_vla.git
+cd vlog_vla
+```
+
+Install:
+
+```bash
+conda activate vlog_vla
+pip install -r requirements.txt
+pip install -e .
+```
+
+This repo intentionally does not install `torch`. Keep using the torch/CUDA build that already works for StarVLA. If you only need editable install after dependencies are present:
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Basic Verification
+
+Run the VLOG tests:
+
+```bash
+pytest \
   tests/test_vlog_vla_modules.py \
   tests/test_vlog_jsonl_dataset.py \
   tests/test_vlog_hidden_hook.py \
@@ -84,128 +92,170 @@ conda run -n starVLA pytest \
   -q
 ```
 
-## Important Files
-
-Core modules:
-
-```text
-starVLA/model/vlog_vla/
-starVLA/model/framework/VLM4A/QwenOFTVLOG.py
-```
-
-Configs:
-
-```text
-configs/vlog_vla/
-```
-
-Scripts:
-
-```text
-scripts/vlog_vla/
-```
-
-LIBERO examples:
-
-```text
-examples/LIBERO/train_files/starvla_qwen_oft_vlog_libero.yaml
-examples/LIBERO/train_files/run_vlog_libero_train*.sh
-examples/LIBERO/eval_files/run_vlog_policy_server.sh
-examples/LIBERO/eval_files/eval_vlog_libero.sh
-```
-
-Reports:
-
-```text
-VLOG_VLA_IMPLEMENTATION_REPORT.md
-VLOG_REAL_LIBERO_WINDOW_REPORT.md
-VLOG_VLA_GIT_UPLOAD_DETAILS.md
-```
-
-## Quick Start
-
-Run module tests:
+Run a minimal smoke experiment:
 
 ```bash
-conda run -n starVLA pytest tests/test_vlog_vla_modules.py -q
+python scripts/vlog_vla/train_vlog_stage1.py \
+  --config configs/vlog_vla/libero_vlog_vla_stage1.yaml
 ```
 
-Run all uploaded VLOG tests:
+Check outputs:
 
 ```bash
-conda run -n starVLA pytest \
-  tests/test_vlog_vla_modules.py \
-  tests/test_vlog_jsonl_dataset.py \
-  tests/test_vlog_hidden_hook.py \
-  tests/test_vlog_no_surrogate_hidden_stage7.py \
-  tests/test_vlog_real_starvla_wrapper.py \
-  tests/test_vlog_starvla_real_integration.py \
-  tests/test_vlog_official_eval_interface.py \
-  -q
+find outputs -maxdepth 3 -type f | sort
 ```
 
-Run Stage 1-6 smoke training:
+## Real StarVLA/LIBERO Paths
+
+For the real hidden-token experiment, edit:
 
 ```bash
-python scripts/vlog_vla/train_vlog_stage1.py --config configs/vlog_vla/libero_vlog_vla_stage1.yaml
-python scripts/vlog_vla/train_vlog_stage2.py --config configs/vlog_vla/libero_vlog_vla_stage2.yaml
-python scripts/vlog_vla/train_vlog_stage3.py --config configs/vlog_vla/libero_vlog_vla_stage3.yaml
-python scripts/vlog_vla/train_vlog_stage4.py --config configs/vlog_vla/libero_vlog_vla_stage4.yaml
-python scripts/vlog_vla/train_vlog_stage5.py --config configs/vlog_vla/libero_vlog_vla_stage5.yaml
-python scripts/vlog_vla/train_vlog_stage6.py --config configs/vlog_vla/libero_vlog_vla_stage6.yaml
+nano configs/vlog_vla/real_starvla_hidden_stage7.yaml
 ```
 
-Run real LIBERO JSONL Stage 1/2:
+Set these fields to paths that exist on the new machine:
+
+```yaml
+base:
+  checkpoint: /ABS/PATH/TO/steps_50000_pytorch_model.pt
+  model_dir: /ABS/PATH/TO/StarVLA_Qwen3_VL_OFT_LIBERO_4in1
+
+dataset:
+  jsonl_path: /ABS/PATH/TO/starvla_lerobot_standard_libero_spatial/train.jsonl
+```
+
+Common expected paths from the original machine were:
+
+```text
+playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1/checkpoints/steps_50000_pytorch_model.pt
+playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1/
+data/starvla_lerobot_standard_libero_spatial/train.jsonl
+```
+
+Verify your paths:
 
 ```bash
-python scripts/vlog_vla/train_vlog_stage1.py --config configs/vlog_vla/libero_vlog_vla_stage1_realdata.yaml
-python scripts/vlog_vla/train_vlog_stage2.py --config configs/vlog_vla/libero_vlog_vla_stage2_realdata.yaml
+ls /ABS/PATH/TO/steps_50000_pytorch_model.pt
+ls /ABS/PATH/TO/StarVLA_Qwen3_VL_OFT_LIBERO_4in1
+ls /ABS/PATH/TO/starvla_lerobot_standard_libero_spatial/train.jsonl
 ```
 
-Probe real StarVLA hidden-token integration:
+## Run Experiments
+
+Stage 1 synthetic smoke:
+
+```bash
+python scripts/vlog_vla/train_vlog_stage1.py \
+  --config configs/vlog_vla/libero_vlog_vla_stage1.yaml
+```
+
+Stage 2 synthetic smoke:
+
+```bash
+python scripts/vlog_vla/train_vlog_stage2.py \
+  --config configs/vlog_vla/libero_vlog_vla_stage2.yaml
+```
+
+Stage 1/2 with real LIBERO JSONL state/action windows:
+
+```bash
+python scripts/vlog_vla/train_vlog_stage1.py \
+  --config configs/vlog_vla/libero_vlog_vla_stage1_realdata.yaml
+
+python scripts/vlog_vla/train_vlog_stage2.py \
+  --config configs/vlog_vla/libero_vlog_vla_stage2_realdata.yaml
+```
+
+Probe real StarVLA hidden tokens:
 
 ```bash
 python scripts/vlog_vla/probe_starvla_hidden_tokens.py \
   --config configs/vlog_vla/real_starvla_hidden_stage7.yaml
 ```
 
-Run real-hidden Stage 7 scripts:
+Run real-hidden VLOG Stage 1:
 
 ```bash
 python scripts/vlog_vla/train_vlog_stage1_real_hidden.py \
   --config configs/vlog_vla/real_starvla_hidden_stage7.yaml
+```
 
+Run real-hidden VLOG Stage 2:
+
+```bash
 python scripts/vlog_vla/train_vlog_stage2_real_hidden.py \
   --config configs/vlog_vla/real_starvla_hidden_stage7.yaml
 ```
 
+## Output Files
+
+Default outputs are written under:
+
+```text
+outputs/
+```
+
+Useful checks:
+
+```bash
+find outputs -maxdepth 4 -type f | sort | tail -80
+cat outputs/vlog_stage1/train_log.jsonl
+```
+
+## Optional Overlay Into an Existing StarVLA Tree
+
+If you prefer to keep using an existing full StarVLA checkout, clone this repo next to it and overlay the VLOG files:
+
+```bash
+cd /PATH/TO/project
+cp -a starvla starvla_backup_before_vlog
+rsync -av --exclude='.git' vlog_vla/ starvla/
+cd starvla
+pip install -e /PATH/TO/project/vlog_vla
+```
+
+Then run the same commands from the full StarVLA directory.
+
 ## Official Eval Surface
 
-Server:
+Policy server:
 
 ```bash
 bash examples/LIBERO/eval_files/run_vlog_policy_server.sh
 ```
 
-Client:
+LIBERO eval client:
 
 ```bash
 bash examples/LIBERO/eval_files/eval_vlog_libero.sh
 ```
 
-The policy server is backward-compatible with normal StarVLA responses and can pass through `vlog_info` for option timeline logging.
+The policy server remains backward-compatible with normal StarVLA responses and can pass through `vlog_info` for option timeline logging.
+
+## Troubleshooting
+
+If `ModuleNotFoundError: starVLA...` appears, confirm installation:
+
+```bash
+python -c "import starVLA.model.vlog_vla as v; print(v.__file__)"
+```
+
+If real hidden-token scripts cannot import full StarVLA framework modules, run from the full StarVLA checkout and install this repo as an overlay:
+
+```bash
+pip install -e /PATH/TO/vlog_vla
+export PYTHONPATH=/PATH/TO/full/starvla:$PYTHONPATH
+```
+
+If GitHub clone is unstable, use a shallow clone:
+
+```bash
+git clone --depth 1 -b feature/vlog-vla-stage7-real-starvla https://github.com/eee336/vlog_vla.git
+```
 
 ## Notes
 
-- The current baseline visual-language encoder is Qwen3-VL through StarVLA `QwenOFT`, not DINOv2.
-- DINOv2 exists in another StarVLA branch (`QwenDual`) but is not the selected VLOG baseline here.
-- The critic is option-level only: `Q(s,o)`.
-- Options are latent codebook entries discovered from trajectories, not manual skill labels.
-- Full official LIBERO simulator success-rate evaluation for VLOG still needs a longer run.
-
-## Limitations
-
-- Stage 1-6 smoke configs are lightweight by design.
-- Real LIBERO JSONL Stage 1/2 uses real state/action windows, but full visual hidden-token training is represented by Stage 7 scripts.
-- Official rollout has an interface wrapper but still needs full benchmark execution and result reporting.
-
+- Current visual-language backbone is StarVLA/QwenOFT, not DINOv2.
+- The option critic is option-level: `Q(s, o)`, not `Q(s, a)`.
+- Smoke configs are intentionally small; increase `training.train_steps` for real runs.
+- Checkpoints, datasets, and generated outputs are intentionally ignored by Git.

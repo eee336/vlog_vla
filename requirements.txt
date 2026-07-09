@@ -1,0 +1,5 @@
+numpy
+Pillow
+PyYAML
+tqdm
+pytest
