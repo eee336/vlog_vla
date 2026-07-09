@@ -1,0 +1,10 @@
+ablation: A5_fixed_duration
+method: VLOG-VLA
+vlog:
+  enabled: true
+  adapter: true
+  codebook: true
+  graph: true
+  critic: true
+  persistence: fixed_duration
+  fixed_duration: 4

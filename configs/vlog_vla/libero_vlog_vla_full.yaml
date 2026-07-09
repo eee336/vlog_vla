@@ -1,0 +1,25 @@
+method: VLOG-VLA
+stage: full
+base_checkpoint: playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1
+benchmark: libero
+stages:
+  - configs/vlog_vla/libero_vlog_vla_stage1.yaml
+  - configs/vlog_vla/libero_vlog_vla_stage2.yaml
+  - configs/vlog_vla/libero_vlog_vla_stage3.yaml
+  - configs/vlog_vla/libero_vlog_vla_stage4.yaml
+  - configs/vlog_vla/libero_vlog_vla_stage5.yaml
+  - configs/vlog_vla/libero_vlog_vla_stage6.yaml
+vlog:
+  enabled: true
+  num_options: 16
+  option_dim: 128
+  window_size: 16
+  d_min: 2
+  d_max: 8
+  beta_threshold: 0.7
+  q_switch_margin: 0.05
+  commitment_cost: 0.25
+evaluation:
+  standard_libero: true
+  libero_long: true
+  perturbation_eval: placeholder_if_env_unsupported

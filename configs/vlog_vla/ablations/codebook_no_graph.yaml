@@ -1,0 +1,9 @@
+ablation: A2_codebook_no_graph
+method: VLOG-VLA
+vlog:
+  enabled: true
+  adapter: true
+  codebook: true
+  graph: false
+  critic: false
+  persistence: true

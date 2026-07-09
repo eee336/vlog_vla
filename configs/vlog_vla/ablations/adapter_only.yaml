@@ -1,0 +1,10 @@
+ablation: A1_adapter_only
+method: VLOG-VLA
+vlog:
+  enabled: true
+  adapter: true
+  codebook: false
+  graph: false
+  critic: false
+  persistence: false
+  alpha_init: 0.0

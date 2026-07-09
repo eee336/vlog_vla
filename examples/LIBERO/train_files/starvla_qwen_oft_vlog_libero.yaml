@@ -1,0 +1,96 @@
+run_id: VLOG_VLA_QwenOFT_LIBERO_REAL
+run_root_dir: results/Checkpoints
+seed: 42
+wandb_entity: your_wandb_entity
+wandb_project: starVLA_Libero
+is_debug: false
+version_id: "0.21"
+
+framework:
+  name: QwenOFTVLOG
+  qwenvl:
+    base_vlm: ./playground/Pretrained_models/Qwen3-VL-4B-Instruct
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048
+  action_model:
+    action_model_type: DiT-B
+    action_dim: 7
+    action_hidden_dim: 2560
+    state_dim: 8
+    action_horizon: 8
+    future_action_window_size: 7
+    past_action_window_size: 0
+  vlog:
+    enabled: true
+    train_stage: stage1_preserve
+    num_options: 16
+    option_dim: 256
+    window_size: 8
+    d_min: 2
+    d_max: 8
+    beta_threshold: 0.7
+    q_switch_margin: 0.05
+    commitment_cost: 0.25
+    zero_init_adapter: true
+    persistent_inference: true
+    losses:
+      lambda_action: 1.0
+      lambda_vq: 1.0
+      lambda_distill: 1.0
+      lambda_balance: 0.05
+      lambda_consistency: 0.02
+      lambda_switch: 0.01
+      lambda_transition: 1.0
+      lambda_sparse: 0.01
+      lambda_critic: 0.5
+      lambda_router: 0.5
+      lambda_term: 0.1
+      lambda_value_term: 0.05
+      alpha_cql: 0.1
+      gamma: 0.99
+      target_update_tau: 0.005
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
+    data_mix: libero_all
+    action_type: delta_qpos
+    sequential_step_sampling: false
+    per_device_batch_size: 1
+    load_all_data_for_training: false
+    video_backend: decord
+    obs: ["image_0"]
+    image_size: [224, 224]
+
+trainer:
+  max_train_steps: 1000
+  num_warmup_steps: 10
+  save_interval: 1000
+  eval_interval: 1000
+  logging_frequency: 1
+  learning_rate:
+    base: 1.0e-05
+    qwen_vl_interface: 0.0
+    action_model: 5.0e-05
+    vlog: 1.0e-04
+    vlog.critic: 1.0e-04
+    vlog.option_adapter: 1.0e-04
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-07
+  freeze_modules: qwen_vl_interface
+  loss_scale:
+    vla: 1.0
+  max_grad_norm: 1.0
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: false
+  save_format: pt
+  pretrained_checkpoint: null
+  reload_modules: null
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08

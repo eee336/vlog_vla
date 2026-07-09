@@ -1,0 +1,52 @@
+method: VLOG-VLA
+stage: stage7_real_starvla_hidden
+
+base:
+  checkpoint: playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1/checkpoints/steps_50000_pytorch_model.pt
+  model_dir: playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1
+
+dataset:
+  type: libero_jsonl
+  jsonl_path: data/starvla_lerobot_standard_libero_spatial/train.jsonl
+  suite: libero_spatial
+  window_size: 10
+  action_dim: 7
+  state_dim: 8
+  batch_size: 2
+  num_workers: 0
+
+vlog:
+  num_options: 16
+  option_dim: 256
+  d_min: 2
+  d_max: 8
+  beta_threshold: 0.7
+  q_switch_margin: 0.05
+  commitment_cost: 0.25
+  use_real_starvla_hidden: true
+  allow_surrogate_hidden: false
+
+training:
+  mixed_precision: true
+  freeze_backbone: true
+  freeze_action_head: true
+  option_lr: 1.0e-4
+  adapter_lr: 1.0e-4
+  critic_lr: 1.0e-4
+  max_steps_stage1: 3
+  max_steps_stage2: 32
+  max_steps_stage3: 8
+  max_steps_stage4: 8
+
+loss:
+  lambda_action: 1.0
+  lambda_vq: 1.0
+  lambda_distill: 1.0
+  lambda_balance: 0.05
+  lambda_consistency: 0.02
+  lambda_switch: 0.01
+  lambda_transition: 1.0
+  lambda_sparse: 0.01
+  lambda_critic: 0.5
+  alpha_cql: 0.1
+  gamma: 0.99

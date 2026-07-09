@@ -1,0 +1,9 @@
+ablation: A6_full_vlog
+method: VLOG-VLA
+vlog:
+  enabled: true
+  adapter: true
+  codebook: true
+  graph: true
+  critic: true
+  persistence: learned_termination_and_value_drop

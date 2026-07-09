@@ -1,0 +1,43 @@
+method: VLOG-VLA
+stage: 2
+base_checkpoint: playground/Pretrained_models/StarVLA_Qwen3_VL_OFT_LIBERO_4in1
+benchmark: libero
+output_dir: outputs/vlog_stage2
+seed: 7
+vlog:
+  enabled: true
+  hidden_dim: 128
+  state_dim: 8
+  action_dim: 7
+  action_horizon: 8
+  num_tokens: 64
+  num_options: 16
+  option_dim: 128
+  window_size: 16
+  d_min: 2
+  d_max: 8
+  beta_threshold: 0.7
+  q_switch_margin: 0.05
+  commitment_cost: 0.25
+  alpha_init: 0.0
+training:
+  freeze_backbone: true
+  freeze_action_head: false
+  use_action_head_lora: false
+  option_lr: 1.0e-4
+  critic_lr: 1.0e-4
+  adapter_lr: 1.0e-4
+  action_head_lr: 5.0e-5
+  batch_size: 8
+  train_steps: 12
+  mixed_precision: false
+  use_cuda: false
+loss:
+  lambda_action: 1.0
+  lambda_vq: 1.0
+  lambda_distill: 1.0
+  lambda_balance: 0.05
+  lambda_consistency: 0.02
+  lambda_switch: 0.01
+  alpha_cql: 0.1
+  gamma: 0.99

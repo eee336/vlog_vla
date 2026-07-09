@@ -1,0 +1,7 @@
+ablation: A0_base_vla
+method: Base VLA
+vlog:
+  enabled: false
+  graph: false
+  critic: false
+  persistence: false
