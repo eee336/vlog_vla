@@ -59,7 +59,7 @@ datasets:
     sequential_step_sampling: false
     per_device_batch_size: 1
     load_all_data_for_training: false
-    video_backend: decord
+    video_backend: pyav
     obs: ["image_0"]
     image_size: [224, 224]
 

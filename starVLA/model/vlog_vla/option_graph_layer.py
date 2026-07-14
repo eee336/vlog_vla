@@ -32,7 +32,9 @@ class OptionGraphLayer(nn.Module):
         batch = state_feature.shape[0]
         num_options = option_codes.shape[0]
         state = self.state_proj(state_feature)
-        nodes = option_codes.unsqueeze(0).expand(batch, num_options, -1)
+        # Detach codebook weights so Stage3 graph/transition losses cannot
+        # rewrite Stage2 option prototypes (was the RoboCasa collapse root cause).
+        nodes = option_codes.detach().unsqueeze(0).expand(batch, num_options, -1)
         ci = nodes.unsqueeze(2).expand(batch, num_options, num_options, -1)
         cj = nodes.unsqueeze(1).expand(batch, num_options, num_options, -1)
         st = state[:, None, None, :].expand(batch, num_options, num_options, -1)

@@ -1,5 +1,7 @@
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -7,11 +9,58 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+.ipynb_checkpoints/
+
+# Local secrets / machine paths
+.vlog_vla.env
+.env
+*.pem
+*.key
+
+# Training / eval artifacts (very large)
 outputs/
+results/
 wandb/
+runs/
 *.log
+MUJOCO_LOG.TXT
+
+# Model weights & checkpoints
 *.pt
 *.pth
+*.ckpt
+*.bin
 *.safetensors
+*.onnx
+*.engine
+
+# Local data & third-party playground clones
 playground/Pretrained_models/
+playground/Datasets/
+playground/Code/
 data/
+datasets/
+
+# Media / caches
+*.mp4
+*.avi
+*.gif
+*.npz
+.cache/
+.cuda/
+tmp/
+temp/
+
+# Editor / OS
+.vscode/
+.idea/
+.cursor/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Coverage / build
+htmlcov/
+dist/
+build/
+*.egg

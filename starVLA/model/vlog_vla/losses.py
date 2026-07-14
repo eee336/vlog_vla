@@ -59,18 +59,28 @@ def conservative_option_critic_loss(
     gamma: float = 0.99,
     alpha_cql: float = 0.1,
 ) -> tuple[torch.Tensor, dict]:
-    target = reward + gamma * (1.0 - done.float()) * next_q_value.detach()
-    td_loss = F.mse_loss(q_data, target)
-    cql_loss = torch.logsumexp(q_all, dim=-1).mean() - q_data.mean()
+    q_data_safe = torch.nan_to_num(q_data, nan=0.0, posinf=50.0, neginf=-50.0).clamp(-50.0, 50.0)
+    q_all_safe = torch.nan_to_num(q_all, nan=0.0, posinf=50.0, neginf=-50.0).clamp(-50.0, 50.0)
+    next_q_safe = torch.nan_to_num(next_q_value, nan=0.0, posinf=50.0, neginf=-50.0).clamp(-50.0, 50.0)
+    reward_safe = torch.nan_to_num(reward, nan=0.0, posinf=1.0, neginf=0.0)
+    done_safe = torch.nan_to_num(done.float(), nan=0.0, posinf=1.0, neginf=0.0)
+    target = reward_safe + gamma * (1.0 - done_safe) * next_q_safe.detach()
+    td_loss = F.mse_loss(q_data_safe, target)
+    # Clamp input to logsumexp to avoid overflow -> NaN corruption.
+    cql_loss = torch.logsumexp(q_all_safe, dim=-1).mean() - q_data_safe.mean()
     loss = td_loss + alpha_cql * cql_loss
+    loss = torch.nan_to_num(loss, nan=0.0, posinf=1e4, neginf=0.0)
     return loss, {
         "td_loss": td_loss.detach(),
         "cql_loss": cql_loss.detach(),
-        "q_data": q_data.detach().mean(),
-        "q_all": q_all.detach().mean(),
+        "q_data": q_data_safe.detach().mean(),
+        "q_all": q_all_safe.detach().mean(),
         "target_q_mean": target.detach().mean(),
     }
 
 
 def termination_loss(beta: torch.Tensor, boundary_label: torch.Tensor) -> torch.Tensor:
-    return F.binary_cross_entropy(beta, boundary_label.float())
+    with torch.amp.autocast(device_type=beta.device.type, enabled=False):
+        beta_fp32 = torch.nan_to_num(beta.float(), nan=0.5, posinf=1.0 - 1e-6, neginf=1e-6).clamp(1e-6, 1.0 - 1e-6)
+        label_fp32 = torch.nan_to_num(boundary_label.float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+        return F.binary_cross_entropy(beta_fp32, label_fp32)

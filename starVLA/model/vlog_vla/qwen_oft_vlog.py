@@ -174,43 +174,97 @@ class QwenOFTVLOG(Qwenvl_OFT):
         }
         return mapping.get(self.vlog_train_stage, 6)
 
+    def _safe_scalar(self, value: torch.Tensor, device, fill: float = 0.0) -> torch.Tensor:
+        if value is None or not torch.is_tensor(value):
+            return torch.zeros((), device=device)
+        value = torch.nan_to_num(value, nan=fill, posinf=1e4, neginf=-1e4)
+        if not torch.isfinite(value).all():
+            return torch.zeros((), device=device, dtype=value.dtype if value.dtype.is_floating_point else torch.float32)
+        if value.ndim != 0:
+            value = value.mean()
+        return value
+
     def _vlog_losses(self, out: dict, pred_vlog: torch.Tensor, pred_base: torch.Tensor, target: torch.Tensor) -> dict:
         cfg = self.config.framework.vlog.get("losses", {})
         device = pred_vlog.device
-        action_loss = self.l1_loss(pred_vlog, target)
-        preserve_loss = self.l1_loss(pred_vlog, pred_base.detach())
+        nan = torch.tensor(float("nan"), device=device)
+
+        # If activations are already corrupted, return non-finite total so the
+        # trainer aborts instead of silently training on zeros.
+        critical = [
+            pred_vlog,
+            pred_base,
+            target,
+            out.get("q_all"),
+            out.get("router_logits"),
+            out.get("option_probs"),
+            out.get("beta"),
+            out.get("edge_logits"),
+            out.get("vq_loss"),
+        ]
+        if any(t is not None and torch.is_tensor(t) and (not torch.isfinite(t).all()) for t in critical):
+            return {
+                "total_loss": nan,
+                "vlog/action_loss": nan,
+                "vlog/preserve_loss": nan,
+                "vlog/vq_loss": nan,
+                "vlog/router_distill_loss": nan,
+                "vlog/option_balance_loss": nan,
+                "vlog/graph_transition_loss": nan,
+                "vlog/edge_sparse_loss": nan,
+                "vlog/critic_td_loss": nan,
+                "vlog/critic_cql_loss": nan,
+                "vlog/termination_loss": nan,
+                "vlog/value_termination_loss": nan,
+                "vlog/router_adv_loss": nan,
+                "vlog/mean_q_current": nan,
+                "vlog/mean_beta": nan,
+                "vlog/adapter_alpha": nan,
+                "vlog/option_entropy": nan,
+                "vlog/dead_options": nan,
+                "vlog/switch_frequency": nan,
+            }
+
+        action_loss = self._safe_scalar(self.l1_loss(pred_vlog, target), device)
+        preserve_loss = self._safe_scalar(self.l1_loss(pred_vlog, pred_base.detach()), device)
         posterior_idx = out.get("posterior_idx", out["router_idx"])
         next_idx = torch.roll(posterior_idx, shifts=-1, dims=0)
-        balance = option_balance_loss(out["option_probs"])
-        distill = router_distill_loss(out["router_logits"], posterior_idx)
-        vq = out.get("vq_loss", torch.zeros((), device=device))
-        transition = graph_transition_loss(out["edge_logits"], posterior_idx, next_idx)
-        sparse = edge_sparse_loss(out["edge_logits"])
-        q_data = out["q_all"][torch.arange(out["q_all"].shape[0], device=device), posterior_idx]
+        balance = self._safe_scalar(option_balance_loss(out["option_probs"]), device)
+        distill = self._safe_scalar(router_distill_loss(out["router_logits"], posterior_idx), device)
+        vq = self._safe_scalar(out.get("vq_loss", torch.zeros((), device=device)), device)
+        # Cap VQ magnitude so a runaway codebook cannot explode the stage-2/5 graph.
+        vq = vq.clamp(0.0, 10.0)
+        transition = self._safe_scalar(graph_transition_loss(out["edge_logits"], posterior_idx, next_idx), device)
+        sparse = self._safe_scalar(edge_sparse_loss(out["edge_logits"]), device)
+        q_all = torch.nan_to_num(out["q_all"], nan=0.0, posinf=50.0, neginf=-50.0).clamp(-50.0, 50.0)
+        q_data = q_all[torch.arange(q_all.shape[0], device=device), posterior_idx]
         reward = torch.zeros_like(q_data)
         reward[-1] = 1.0
         done = torch.zeros_like(q_data)
         done[-1] = 1.0
-        next_q = torch.max(out["q_all"].detach(), dim=-1).values
+        next_q = torch.max(q_all.detach(), dim=-1).values
         critic_loss, critic_metrics = conservative_option_critic_loss(
             q_data,
-            out["q_all"],
+            q_all,
             reward,
             done,
             next_q,
             gamma=float(cfg.get("gamma", 0.99)),
             alpha_cql=float(cfg.get("alpha_cql", 0.1)),
         )
-        q_mean = out["q_all"].mean(dim=-1)
+        critic_loss = self._safe_scalar(critic_loss, device)
+        q_mean = q_all.mean(dim=-1)
         adv = torch.clamp(q_data - q_mean, -5.0, 5.0).detach()
-        logp = torch.log_softmax(out["router_logits"], dim=-1)[torch.arange(posterior_idx.shape[0], device=device), posterior_idx]
-        router_adv = -(logp * torch.exp(adv)).mean()
+        router_logits = torch.nan_to_num(out["router_logits"], nan=0.0, posinf=50.0, neginf=-50.0).clamp(-50.0, 50.0)
+        logp = torch.log_softmax(router_logits, dim=-1)[torch.arange(posterior_idx.shape[0], device=device), posterior_idx]
+        # Avoid exp(adv) overflow; use bounded linear weighting instead.
+        router_weight = torch.clamp(1.0 + adv, 0.0, 6.0)
+        router_adv = self._safe_scalar(-(logp * router_weight).mean(), device)
         boundary = (posterior_idx != next_idx).float()
-        value_label = (torch.max(out["q_all"], dim=-1).values > q_data + float(self.config.framework.vlog.get("q_switch_margin", 0.05))).float()
-        term = termination_loss(out["beta"], boundary)
-        value_term = termination_loss(out["beta"], value_label)
-        consistency = torch.zeros((), device=device)
-        switch = torch.zeros((), device=device)
+        value_label = (torch.max(q_all, dim=-1).values > q_data + float(self.config.framework.vlog.get("q_switch_margin", 0.05))).float()
+        beta = torch.nan_to_num(out["beta"], nan=0.5, posinf=1.0 - 1e-6, neginf=1e-6).clamp(1e-6, 1.0 - 1e-6)
+        term = self._safe_scalar(termination_loss(beta, boundary), device)
+        value_term = self._safe_scalar(termination_loss(beta, value_label), device)
         stage = self._stage_number()
         if stage == 1:
             total = preserve_loss
@@ -229,6 +283,7 @@ class QwenOFTVLOG(Qwenvl_OFT):
             total = action_loss + float(cfg.get("lambda_router", 0.5)) * router_adv + float(cfg.get("lambda_critic", 0.5)) * critic_loss
         else:
             total = action_loss + float(cfg.get("lambda_router", 0.3)) * router_adv + float(cfg.get("lambda_term", 0.1)) * term + float(cfg.get("lambda_value_term", 0.05)) * value_term
+        total = self._safe_scalar(total, device)
         metrics = {
             "total_loss": total,
             "vlog/action_loss": action_loss.detach(),
@@ -238,16 +293,20 @@ class QwenOFTVLOG(Qwenvl_OFT):
             "vlog/option_balance_loss": balance.detach(),
             "vlog/graph_transition_loss": transition.detach(),
             "vlog/edge_sparse_loss": sparse.detach(),
-            "vlog/critic_td_loss": critic_metrics["td_loss"].detach(),
-            "vlog/critic_cql_loss": critic_metrics["cql_loss"].detach(),
+            "vlog/critic_td_loss": self._safe_scalar(critic_metrics["td_loss"], device).detach(),
+            "vlog/critic_cql_loss": self._safe_scalar(critic_metrics["cql_loss"], device).detach(),
             "vlog/termination_loss": term.detach(),
             "vlog/value_termination_loss": value_term.detach(),
             "vlog/router_adv_loss": router_adv.detach(),
             "vlog/mean_q_current": q_data.detach().mean(),
-            "vlog/mean_beta": out["beta"].detach().mean(),
-            "vlog/adapter_alpha": self.vlog.option_adapter.alpha.detach().mean(),
-            "vlog/option_entropy": self._entropy(out["option_probs"]).detach(),
-            "vlog/dead_options": (out["option_probs"].mean(dim=0) < 1e-4).sum().float().detach(),
+            "vlog/mean_beta": beta.detach().mean(),
+            "vlog/adapter_alpha": (
+                self.vlog.option_adapter.effective_alpha().detach().mean()
+                if hasattr(self.vlog.option_adapter, "effective_alpha")
+                else self.vlog.option_adapter.alpha.detach().clamp(min=0.0).mean()
+            ),
+            "vlog/option_entropy": self._entropy(torch.nan_to_num(out["option_probs"], nan=0.0)).detach(),
+            "vlog/dead_options": (torch.nan_to_num(out["option_probs"], nan=0.0).mean(dim=0) < 1e-4).sum().float().detach(),
             "vlog/switch_frequency": boundary.mean().detach(),
         }
         return metrics

@@ -13,8 +13,10 @@ Conventions:
 # Standard Library
 import argparse
 import json
+import math
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Tuple
 
@@ -38,8 +40,11 @@ from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
-deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+if os.getenv("STARVLA_USE_DEEPSPEED", "1") == "1":
+    deepspeed_plugin = DeepSpeedPlugin()
+    accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+else:
+    accelerator = Accelerator()
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -71,7 +76,8 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     vla_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.vla_data.dataset_py)
 
     accelerator.dataloader_config.dispatch_batches = False
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
     return vla_train_dataloader
 
 
@@ -115,6 +121,10 @@ class VLATrainer(TrainerUtils):
 
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
+        self._early_stop_best = float("inf")
+        self._early_stop_counter = 0
+        self._early_stop_window: deque[float] = deque()
+        self._nan_streak = 0
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -239,7 +249,7 @@ class VLATrainer(TrainerUtils):
             save_format = getattr(self.config.trainer, "save_format", "pt")
             checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
 
-            state_dict = self.accelerator.get_state_dict(self.model)
+            state_dict = self._get_state_dict_for_save()
             if save_format == "safetensors":
                 from safetensors.torch import save_file
 
@@ -262,9 +272,16 @@ class VLATrainer(TrainerUtils):
 
         self.accelerator.wait_for_everyone()
 
+    def _get_state_dict_for_save(self):
+        if os.getenv("STARVLA_USE_DEEPSPEED", "1") == "0" and not dist.is_initialized():
+            return self.model.state_dict()
+        return self.accelerator.get_state_dict(self.model)
+
     def _log_metrics(self, metrics):
         """Record training metrics."""
-        if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
+        if self.completed_steps % self.config.trainer.logging_frequency == 0 and (
+            not dist.is_initialized() or dist.get_rank() == 0
+        ):
             last_lrs = self.lr_scheduler.get_last_lr()
             for i, group in enumerate(self.optimizer.param_groups):
                 group_name = group.get("name", str(i))
@@ -276,6 +293,48 @@ class VLATrainer(TrainerUtils):
             log_dir.mkdir(parents=True, exist_ok=True)
             with (log_dir / "train_log.jsonl").open("a") as f:
                 f.write(json.dumps({"step": self.completed_steps, **metrics}, sort_keys=True) + "\n")
+
+    def _should_early_stop(self, step_metrics: dict) -> bool:
+        trainer_cfg = self.config.trainer
+        patience = int(getattr(trainer_cfg, "early_stop_patience", 0) or 0)
+        if patience <= 0:
+            return False
+
+        min_steps = int(getattr(trainer_cfg, "early_stop_min_steps", 0) or 0)
+        if self.completed_steps < min_steps:
+            return False
+
+        metric_name = str(getattr(trainer_cfg, "early_stop_metric", "action_dit_loss") or "action_dit_loss")
+        loss = step_metrics.get(metric_name)
+        if loss is None or not math.isfinite(float(loss)):
+            return False
+
+        window = max(1, int(getattr(trainer_cfg, "early_stop_window", 100) or 100))
+        min_delta = float(getattr(trainer_cfg, "early_stop_min_delta", 0.01) or 0.01)
+
+        self._early_stop_window.append(float(loss))
+        if len(self._early_stop_window) > window:
+            self._early_stop_window.popleft()
+        if len(self._early_stop_window) < window:
+            return False
+
+        avg_loss = sum(self._early_stop_window) / len(self._early_stop_window)
+        if avg_loss < self._early_stop_best - min_delta:
+            self._early_stop_best = avg_loss
+            self._early_stop_counter = 0
+            return False
+
+        self._early_stop_counter += 1
+        if self._early_stop_counter >= patience:
+            logger.info(
+                "Early stopping triggered at step %s (best_avg=%.6f, current_avg=%.6f, patience=%s)",
+                self.completed_steps,
+                self._early_stop_best,
+                avg_loss,
+                patience,
+            )
+            return True
+        return False
 
     def _create_data_iterators(self):
         """Create data iterators."""
@@ -336,6 +395,10 @@ class VLATrainer(TrainerUtils):
             if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
                 self._save_checkpoint()
 
+            if self._should_early_stop(step_metrics):
+                self._save_checkpoint()
+                break
+
             if self.completed_steps >= self.config.trainer.max_train_steps:
                 break
 
@@ -357,7 +420,8 @@ class VLATrainer(TrainerUtils):
             step_metrics["mse_score"] = score / num_pots
 
         del examples
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
         return step_metrics
 
     def _log_training_config(self):
@@ -379,6 +443,16 @@ class VLATrainer(TrainerUtils):
                 action_loss = output_dict["action_loss"]
                 total_loss = action_loss
 
+            if not torch.isfinite(total_loss):
+                self._nan_streak += 1
+                max_nan = int(getattr(self.config.trainer, "max_consecutive_nan_steps", 200) or 200)
+                logger.warning("Skipping non-finite loss step (streak=%s)", self._nan_streak)
+                if self._nan_streak >= max_nan:
+                    raise RuntimeError(f"Training aborted: {self._nan_streak} consecutive non-finite losses")
+                metrics = {"action_dit_loss": float("nan")}
+                return metrics
+
+            self._nan_streak = 0
             self.accelerator.backward(total_loss)
 
             if self.config.trainer.gradient_clipping is not None:
@@ -407,7 +481,7 @@ class VLATrainer(TrainerUtils):
             save_format = getattr(self.config.trainer, "save_format", "pt")
             final_checkpoint = os.path.join(self.config.output_dir, "final_model")
             os.makedirs(final_checkpoint, exist_ok=True)
-            state_dict = self.accelerator.get_state_dict(self.model)
+            state_dict = self._get_state_dict_for_save()
             if save_format == "safetensors":
                 from safetensors.torch import save_file
 
@@ -448,8 +522,9 @@ def main(cfg) -> None:
     trainer.train()
 
     logger.info("... and that's all, folks!")
-    dist.barrier()
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
