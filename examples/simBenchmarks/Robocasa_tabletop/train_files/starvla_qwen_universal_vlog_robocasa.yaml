@@ -1,0 +1,111 @@
+run_id: qwen_universal_vlog_robocasa
+run_root_dir: results/Checkpoints
+seed: 42
+wandb_entity: your_wandb_entity
+wandb_project: starvla_universal_vlog
+is_debug: false
+version_id: "0.21"
+
+framework:
+  name: QwenUniversalVLOG
+  # Must match the VLM used by the selected official GR00T checkpoint.  The
+  # framework rejects embed/action shape mismatches instead of skipping them.
+  qwenvl:
+    base_vlm: ./playground/Pretrained_models/Qwen3-VL-4B-Instruct
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2560
+  base_embodiment: robocasa_gr1
+  embodiments:
+    robocasa_gr1: {state_dim: 58, action_dim: 29, state_tokens: 1}
+    libero: {state_dim: 7, action_dim: 7, state_tokens: 1}
+  action_model:
+    action_model_type: DiT-B
+    hidden_size: 1024
+    add_pos_embed: true
+    max_seq_len: 1024
+    action_dim: 29
+    state_dim: 58
+    action_horizon: 16
+    repeated_diffusion_steps: 1
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 32
+    diffusion_model_cfg:
+      cross_attention_dim: 2560
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: ada_norm
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
+  vlog:
+    enabled: true
+    train_stage: u1_oracle
+    num_options: 8
+    option_dim: 256
+    fusion_enabled: true
+    fusion_residual_scale: 0.05
+    d_min: 2
+    d_max: 8
+    router_hysteresis: 0.15
+    counterfactual_every: 4
+    counterfactual_margin: 0.05
+    improve_margin: 0.0
+    commitment_cost: 0.25
+    losses:
+      lambda_fm: 1.0
+      lambda_vq: 1.0
+      lambda_commitment: 0.25
+      lambda_usage: 0.05
+      lambda_motion: 0.1
+      lambda_router: 1.0
+      lambda_counterfactual: 0.2
+      lambda_improve: 0.2
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    include_state: true
+    data_root_dir: playground/Datasets/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim
+    data_mix: fourier_gr1_unified_1000
+    action_type: delta_ee
+    sequential_step_sampling: false
+    per_device_batch_size: 8
+    load_all_data_for_training: true
+    obs_image_size: [224, 224]
+    delete_pause_frame: false
+
+trainer:
+  max_train_steps: 30000
+  num_warmup_steps: 1000
+  save_interval: 5000
+  eval_interval: 5000
+  logging_frequency: 10
+  learning_rate:
+    # Remaining trainable action-head parameters in U3 use the conservative LR.
+    base: 1.0e-05
+    qwen_vl_interface: 0.0
+    action_model.model: 1.0e-05
+    action_model.adapter_bank: 1.0e-04
+    action_model.option_conditioner: 5.0e-05
+    vlog_core: 1.0e-04
+    vlog_core.router: 1.0e-04
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs: {min_lr: 5.0e-07}
+  freeze_modules: ""
+  loss_scale: {vla: 1.0}
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  save_format: pt
+  # Required at launch.  Do not populate this from an old .vlog_vla.env.
+  pretrained_checkpoint: null
+  reload_modules: null
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08

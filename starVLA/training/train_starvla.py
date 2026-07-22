@@ -438,6 +438,14 @@ class VLATrainer(TrainerUtils):
         with self.accelerator.accumulate(self.model):
             self.optimizer.zero_grad()
 
+            # Frameworks with expensive periodically paired objectives (for
+            # example UniversalVLOG counterfactual FM) need the *optimizer*
+            # step, not a micro-batch/forward counter.  Keep this a generic
+            # optional hook so ordinary StarVLA frameworks are unaffected.
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            if hasattr(unwrapped_model, "set_optimizer_step"):
+                unwrapped_model.set_optimizer_step(self.completed_steps)
+
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
                 action_loss = output_dict["action_loss"]
