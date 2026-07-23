@@ -15,6 +15,8 @@ RUN_ID="${RUN_ID:-qwen_universal_vlog_robocasa_${TRAIN_STAGE}}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
 EVAL_INTERVAL="${EVAL_INTERVAL:-5000}"
 NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-1000}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
 
 case "${TRAIN_STAGE}" in
   u0_base)
@@ -49,4 +51,8 @@ STARVLA_GRAD_ACCUM="${GRAD_ACCUM}" accelerate launch starVLA/training/train_star
   --trainer.save_interval "${SAVE_INTERVAL}" \
   --trainer.eval_interval "${EVAL_INTERVAL}" \
   --trainer.gradient_accumulation_steps "${GRAD_ACCUM}" \
-  --datasets.vla_data.per_device_batch_size "${BATCH_SIZE}"
+  --datasets.vla_data.per_device_batch_size "${BATCH_SIZE}" \
+  --datasets.vla_data.num_workers "${NUM_WORKERS}" \
+  --datasets.vla_data.pin_memory true \
+  --datasets.vla_data.persistent_workers true \
+  --datasets.vla_data.prefetch_factor "${PREFETCH_FACTOR}"
