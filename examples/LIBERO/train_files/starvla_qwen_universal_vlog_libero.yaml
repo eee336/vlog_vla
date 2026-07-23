@@ -49,13 +49,29 @@ framework:
     option_dim: 256
     fusion_enabled: false
     fusion_residual_scale: 0.05
+    conditioning_mode: option_only
+    bound_conditioning_outputs: true
+    inject_base_embodiment_token: false
     d_min: 2
     d_max: 8
     router_hysteresis: 0.15
-    counterfactual_every: 4
+    counterfactual_every: 1
     counterfactual_margin: 0.05
+    counterfactual_margin_mode: relative_base
+    counterfactual_wrong_sampling: random
     improve_margin: 0.0
     commitment_cost: 0.25
+    codebook_cosine_margin: 0.2
+    losses:
+      lambda_fm: 1.0
+      lambda_vq: 1.0
+      lambda_commitment: 0.25
+      lambda_usage: 0.05
+      lambda_codebook_separation: 0.1
+      lambda_motion: 0.1
+      lambda_router: 1.0
+      lambda_counterfactual: 1.0
+      lambda_improve: 0.2
 
 datasets:
   vla_data:
@@ -90,6 +106,7 @@ trainer:
   save_format: pt
   pretrained_checkpoint: null
   reload_modules: null
+  reinitialize_modules: null
   optimizer:
     name: AdamW
     betas: [0.9, 0.95]

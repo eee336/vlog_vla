@@ -96,19 +96,26 @@ class QwenUniversalVLOGDefaultConfig(QwenGR00TDefaultConfig):
             "option_dim": 256,
             "fusion_enabled": False,
             "fusion_residual_scale": 0.05,
+            "conditioning_mode": "legacy_context",
+            "bound_conditioning_outputs": False,
+            "inject_base_embodiment_token": True,
             "d_min": 2,
             "d_max": 8,
             "router_hysteresis": 0.15,
             "router_fm_diagnostics_every": 100,
             "counterfactual_every": 4,
             "counterfactual_margin": 0.05,
+            "counterfactual_margin_mode": "absolute",
+            "counterfactual_wrong_sampling": "cyclic",
             "improve_margin": 0.0,
             "commitment_cost": 0.25,
+            "codebook_cosine_margin": 0.2,
             "losses": {
                 "lambda_fm": 1.0,
                 "lambda_vq": 1.0,
                 "lambda_commitment": 0.25,
                 "lambda_usage": 0.05,
+                "lambda_codebook_separation": 0.0,
                 "lambda_motion": 0.1,
                 "lambda_router": 1.0,
                 "lambda_counterfactual": 0.2,
@@ -161,10 +168,12 @@ class UniversalVLOGCore(nn.Module):
         option_dim: int,
         num_options: int,
         commitment_cost: float,
+        codebook_cosine_margin: float = 0.2,
     ) -> None:
         super().__init__()
         self.num_options = int(num_options)
         self.option_dim = int(option_dim)
+        self.codebook_cosine_margin = float(codebook_cosine_margin)
         self.vl_projection = nn.Sequential(
             nn.LayerNorm(int(vl_dim)), nn.Linear(int(vl_dim), int(option_dim))
         )
@@ -182,6 +191,17 @@ class UniversalVLOGCore(nn.Module):
             nn.GELU(),
             nn.Linear(dit_dim, dit_dim),
         )
+
+    def codebook_separation_loss(self) -> torch.Tensor:
+        """Penalise pairs of option codes whose cosine similarity is too high."""
+
+        normalized = F.normalize(self.codebook.codebook.weight.float(), dim=-1)
+        cosine = normalized @ normalized.transpose(0, 1)
+        off_diagonal = ~torch.eye(
+            self.num_options, device=cosine.device, dtype=torch.bool
+        )
+        pairwise = cosine[off_diagonal]
+        return F.relu(pairwise - self.codebook_cosine_margin).square().mean()
 
     def aggregate(
         self,
@@ -219,6 +239,7 @@ class UniversalVLOGCore(nn.Module):
         soft_usage = torch.softmax(-distances, dim=-1).mean(dim=0)
         uniform = torch.full_like(soft_usage, 1.0 / self.num_options)
         usage_loss = F.kl_div((soft_usage + 1e-8).log(), uniform, reduction="sum")
+        separation_loss = self.codebook_separation_loss()
         return {
             "state_feature": state_feature,
             "option": option,
@@ -227,6 +248,7 @@ class UniversalVLOGCore(nn.Module):
             "vq_loss": vq_loss,
             "commitment_loss": commitment_loss,
             "usage_loss": usage_loss,
+            "codebook_separation_loss": separation_loss,
             "motion_loss": motion_loss,
             "usage": hard_usage,
             "soft_usage": soft_usage,
@@ -255,6 +277,9 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
         base_embodiment: str,
         option_dim: int,
         fusion_residual_scale: float,
+        conditioning_mode: str = "legacy_context",
+        bound_conditioning_outputs: bool = False,
+        inject_base_embodiment_token: bool = True,
     ) -> None:
         super().__init__(full_config=full_config)
         self.base_embodiment = str(base_embodiment)
@@ -262,6 +287,7 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
         self.embodiment_to_index = {
             name: idx for idx, name in enumerate(self.embodiment_names)
         }
+        self.inject_base_embodiment_token = bool(inject_base_embodiment_token)
         self.adapter_bank = EmbodimentAdapterBank(
             specs=specs,
             base_embodiment=self.base_embodiment,
@@ -277,6 +303,8 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
             embodiment_dim=self.input_embedding_dim,
             dit_dim=self.input_embedding_dim,
             rho=float(fusion_residual_scale),
+            conditioning_mode=str(conditioning_mode),
+            bound_outputs=bool(bound_conditioning_outputs),
         )
 
     def embodiment_index(
@@ -349,6 +377,7 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
                 device=action_features.device,
             )
             action_features = action_features + self.position_embedding(pos_ids)[None]
+        unconditioned_action_features = action_features
         state_features = self.encode_state(state, embodiment_id)
         future_tokens = self.future_tokens.weight[None].expand(vl_embs.shape[0], -1, -1)
 
@@ -358,26 +387,41 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
             and self.option_conditioner.rho > 0.0
         )
         # Preserve the exact historical GR00T sequence for base/fusion-off.
-        add_embodiment_token = use_option or not self.adapter_bank.is_base(
-            embodiment_id
+        add_embodiment_token = (
+            not self.adapter_bank.is_base(embodiment_id)
+            or (use_option and self.inject_base_embodiment_token)
         )
         sequence = [state_features]
-        residual = torch.zeros_like(action_features)
+        raw_residual = torch.zeros_like(action_features)
+        applied_residual = torch.zeros_like(action_features)
+        option_token = torch.zeros(
+            action_features.shape[0],
+            1,
+            action_features.shape[-1],
+            device=action_features.device,
+            dtype=action_features.dtype,
+        )
         if add_embodiment_token:
             embodiment = self._embodiment_embedding(
                 embodiment_id, vl_embs.shape[0], vl_embs.device
             )
             sequence.append(embodiment[:, None, :])
-            if use_option:
-                conditioned = self.option_conditioner(
-                    action_features,
-                    option_embedding,
-                    state_features.mean(dim=1),
-                    embodiment,
-                )
-                action_features = conditioned.action_tokens
-                residual = conditioned.residual
-                sequence.append(conditioned.option_token)
+        else:
+            embodiment = self._embodiment_embedding(
+                embodiment_id, vl_embs.shape[0], vl_embs.device
+            )
+        if use_option:
+            conditioned = self.option_conditioner(
+                action_features,
+                option_embedding,
+                state_features.mean(dim=1),
+                embodiment,
+            )
+            action_features = conditioned.action_tokens
+            raw_residual = conditioned.residual
+            applied_residual = conditioned.applied_residual
+            option_token = conditioned.option_token
+            sequence.append(conditioned.option_token)
         sequence.extend([future_tokens, action_features])
         model_output = self.model(
             hidden_states=torch.cat(sequence, dim=1),
@@ -387,8 +431,17 @@ class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
             return_all_hidden_states=False,
         )
         pred = self.decode_velocity(model_output, embodiment_id)
+        base_token_norm = unconditioned_action_features.float().norm(dim=-1)
+        applied_norm = applied_residual.float().norm(dim=-1)
         return pred[:, -noisy_actions.shape[1] :], {
-            "fusion_residual": residual,
+            # ``fusion_residual`` is the perturbation actually added after rho,
+            # not the pre-scale value.  Keep the raw value separately.
+            "fusion_residual": applied_residual,
+            "fusion_residual_raw": raw_residual,
+            "fusion_residual_ratio": applied_norm
+            / base_token_norm.clamp_min(1.0e-6),
+            "action_token_norm": base_token_norm,
+            "option_token_norm": option_token.float().norm(dim=-1).squeeze(1),
             "dit_sequence_length": torch.tensor(
                 model_output.shape[1], device=model_output.device, dtype=torch.float32
             ),
@@ -549,6 +602,13 @@ class QwenUniversalVLOG(baseframework):
             base_embodiment=self.base_embodiment,
             option_dim=int(vlog_cfg.option_dim),
             fusion_residual_scale=float(vlog_cfg.fusion_residual_scale),
+            conditioning_mode=str(vlog_cfg.get("conditioning_mode", "legacy_context")),
+            bound_conditioning_outputs=bool(
+                vlog_cfg.get("bound_conditioning_outputs", False)
+            ),
+            inject_base_embodiment_token=bool(
+                vlog_cfg.get("inject_base_embodiment_token", True)
+            ),
         )
         self.action_horizon = int(action_cfg.action_horizon)
         self.vlog_core = UniversalVLOGCore(
@@ -557,6 +617,9 @@ class QwenUniversalVLOG(baseframework):
             option_dim=int(vlog_cfg.option_dim),
             num_options=int(vlog_cfg.num_options),
             commitment_cost=float(vlog_cfg.commitment_cost),
+            codebook_cosine_margin=float(
+                vlog_cfg.get("codebook_cosine_margin", 0.2)
+            ),
         )
         self.controller = SemiMarkovController(
             d_min=int(vlog_cfg.d_min),
@@ -600,8 +663,9 @@ class QwenUniversalVLOG(baseframework):
         elif stage == "u1_oracle":
             for name, parameter in self.vlog_core.named_parameters():
                 parameter.requires_grad_(not name.startswith("router."))
-            for parameter in self.action_model.option_conditioner.parameters():
-                parameter.requires_grad_(True)
+            self.action_model.option_conditioner.configure_trainable_parameters(
+                True
+            )
         elif stage == "u2_router":
             for parameter in self.vlog_core.router.parameters():
                 parameter.requires_grad_(True)
@@ -612,6 +676,9 @@ class QwenUniversalVLOG(baseframework):
                 parameter.requires_grad_(True)
             for parameter in self.qwen_vl_interface.parameters():
                 parameter.requires_grad_(False)
+            self.action_model.option_conditioner.configure_trainable_parameters(
+                True
+            )
 
     def _autocast(self, dtype: torch.dtype):
         return (
@@ -873,12 +940,19 @@ class QwenUniversalVLOG(baseframework):
                         encoder_attention_mask=mask_vl,
                     )
                 residual_norm = router_fm["fusion_residual"].float().norm(dim=-1)
+                residual_ratio = router_fm["fusion_residual_ratio"].float()
                 result.update(
                     {
                         "fm_base": base_diagnostic["loss"].detach(),
                         "fm_router": router_fm["loss"].detach(),
                         "fusion_residual_p50": residual_norm.quantile(0.5).detach(),
                         "fusion_residual_p95": residual_norm.quantile(0.95).detach(),
+                        "fusion_residual_ratio_p50": residual_ratio.quantile(
+                            0.5
+                        ).detach(),
+                        "fusion_residual_ratio_p95": residual_ratio.quantile(
+                            0.95
+                        ).detach(),
                     }
                 )
             return result
@@ -909,7 +983,27 @@ class QwenUniversalVLOG(baseframework):
         cf_every = max(1, int(vlog_cfg.counterfactual_every))
         trigger_cf = self._optimizer_step % cf_every == 0
         if trigger_cf:
-            wrong_idx = (oracle["option_idx"] + 1) % self.vlog_core.num_options
+            wrong_sampling = str(
+                vlog_cfg.get("counterfactual_wrong_sampling", "cyclic")
+            )
+            if wrong_sampling == "random":
+                offsets = torch.randint(
+                    1,
+                    self.vlog_core.num_options,
+                    oracle["option_idx"].shape,
+                    device=oracle["option_idx"].device,
+                )
+                wrong_idx = (
+                    oracle["option_idx"] + offsets
+                ) % self.vlog_core.num_options
+            elif wrong_sampling == "cyclic":
+                wrong_idx = (
+                    oracle["option_idx"] + 1
+                ) % self.vlog_core.num_options
+            else:
+                raise ValueError(
+                    "counterfactual_wrong_sampling must be 'cyclic' or 'random'"
+                )
             wrong_option = self.vlog_core.codebook.codebook(wrong_idx)
             wrong = self.action_model.flow_forward(
                 vl,
@@ -924,14 +1018,33 @@ class QwenUniversalVLOG(baseframework):
                 encoder_attention_mask=mask_vl,
             )
             wrong_loss = wrong["loss"]
+            margin_mode = str(
+                vlog_cfg.get("counterfactual_margin_mode", "absolute")
+            )
+            if margin_mode == "relative_base":
+                counterfactual_margin = (
+                    float(vlog_cfg.counterfactual_margin) * base["loss"].detach()
+                )
+            elif margin_mode == "absolute":
+                counterfactual_margin = torch.as_tensor(
+                    float(vlog_cfg.counterfactual_margin),
+                    device=correct["loss"].device,
+                    dtype=correct["loss"].dtype,
+                )
+            else:
+                raise ValueError(
+                    "counterfactual_margin_mode must be 'absolute' or 'relative_base'"
+                )
             counterfactual = F.relu(
-                float(vlog_cfg.counterfactual_margin) + correct["loss"] - wrong["loss"]
+                counterfactual_margin + correct["loss"] - wrong["loss"]
             )
         total = (
             float(losses_cfg.lambda_fm) * correct["loss"]
             + float(losses_cfg.lambda_vq) * oracle["vq_loss"]
             + float(losses_cfg.lambda_commitment) * oracle["commitment_loss"]
             + float(losses_cfg.lambda_usage) * oracle["usage_loss"]
+            + float(losses_cfg.get("lambda_codebook_separation", 0.0))
+            * oracle["codebook_separation_loss"]
             + float(losses_cfg.lambda_motion) * oracle["motion_loss"]
             + (
                 float(losses_cfg.lambda_router) * router_loss
@@ -942,6 +1055,7 @@ class QwenUniversalVLOG(baseframework):
             + float(losses_cfg.lambda_improve) * improve
         )
         residual_norm = correct["fusion_residual"].float().norm(dim=-1)
+        residual_ratio = correct["fusion_residual_ratio"].float()
         return {
             "total": total,
             "fm_base": base["loss"].detach(),
@@ -952,11 +1066,20 @@ class QwenUniversalVLOG(baseframework):
             "vq_loss": oracle["vq_loss"].detach(),
             "commitment_loss": oracle["commitment_loss"].detach(),
             "usage_loss": oracle["usage_loss"].detach(),
+            "codebook_separation_loss": oracle[
+                "codebook_separation_loss"
+            ].detach(),
             "motion_loss": oracle["motion_loss"].detach(),
             "counterfactual_loss": counterfactual.detach(),
             "improve_loss": improve.detach(),
             "fusion_residual_p50": residual_norm.quantile(0.5).detach(),
             "fusion_residual_p95": residual_norm.quantile(0.95).detach(),
+            "fusion_residual_ratio_p50": residual_ratio.quantile(0.5).detach(),
+            "fusion_residual_ratio_p95": residual_ratio.quantile(0.95).detach(),
+            "option_token_norm_p50": correct["option_token_norm"]
+            .float()
+            .quantile(0.5)
+            .detach(),
             "option_entropy": (
                 -(oracle["usage"] * (oracle["usage"] + 1e-8).log()).sum()
             ).detach(),

@@ -297,6 +297,14 @@ def evaluate(args: argparse.Namespace) -> dict:
                     residual * action_mask.to(residual.dtype)
                 ).sum(dim=-1) / action_mask.sum(dim=-1).clamp_min(1)
                 repeat_values["fusion_residual"].append(residual)
+                residual_ratio = correct["fusion_residual_ratio"].float()
+                residual_ratio = (
+                    residual_ratio * action_mask.to(residual_ratio.dtype)
+                ).sum(dim=-1) / action_mask.sum(dim=-1).clamp_min(1)
+                repeat_values["fusion_residual_ratio"].append(residual_ratio)
+                repeat_values["option_token_norm"].append(
+                    correct["option_token_norm"].float()
+                )
 
             averaged = {
                 key: _mean_over_repeats(value)
@@ -351,6 +359,14 @@ def evaluate(args: argparse.Namespace) -> dict:
     summaries = {key: _summary(value) for key, value in measurements.items()}
     oracle_probs = oracle_counts.float() / oracle_counts.sum().clamp_min(1)
     router_probs = router_counts.float() / router_counts.sum().clamp_min(1)
+    normalized_codes = F.normalize(
+        model.vlog_core.codebook.codebook.weight.detach().float(), dim=-1
+    )
+    code_cosine = normalized_codes @ normalized_codes.transpose(0, 1)
+    off_diagonal = ~torch.eye(
+        model.vlog_core.num_options, dtype=torch.bool, device=code_cosine.device
+    )
+    pairwise_cosine = code_cosine[off_diagonal].cpu().numpy()
     option_usage = {
         "oracle_counts": oracle_counts.tolist(),
         "router_counts": router_counts.tolist(),
@@ -358,6 +374,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         "router_active": int((router_counts > 0).sum()),
         "oracle_dominant_share": float(oracle_probs.max()),
         "router_dominant_share": float(router_probs.max()),
+        "codebook_pairwise_cosine_mean": float(pairwise_cosine.mean()),
+        "codebook_pairwise_cosine_max": float(pairwise_cosine.max()),
     }
 
     correct_mean = summaries["fm_correct"]["mean"]
@@ -396,6 +414,12 @@ def evaluate(args: argparse.Namespace) -> dict:
         is not None
         and summaries["fusion_residual"]["p50"]
         >= args.min_residual_p50,
+        "fusion_residual_ratio_bounded": summaries[
+            "fusion_residual_ratio"
+        ]["p95"]
+        is not None
+        and summaries["fusion_residual_ratio"]["p95"]
+        <= args.max_residual_ratio_p95,
     }
     gate_r_checks = {
         "enough_observations": processed_observations >= args.min_observations,
@@ -426,6 +450,16 @@ def evaluate(args: argparse.Namespace) -> dict:
         "checkpoint_size_bytes": checkpoint.stat().st_size,
         "git_revision": _git_revision(),
         "saved_train_stage": str(model.vlog_train_stage),
+        "conditioning": {
+            "mode": str(model.action_model.option_conditioner.conditioning_mode),
+            "rho": float(model.action_model.option_conditioner.rho),
+            "bound_outputs": bool(
+                model.action_model.option_conditioner.bound_outputs
+            ),
+            "inject_base_embodiment_token": bool(
+                model.action_model.inject_base_embodiment_token
+            ),
+        },
         "dataset": {
             "data_mix": str(data_cfg.data_mix),
             "data_root_dir": str(data_cfg.data_root_dir),
@@ -448,6 +482,7 @@ def evaluate(args: argparse.Namespace) -> dict:
             "min_active_options": args.min_active_options,
             "max_dominant_share": args.max_dominant_share,
             "min_residual_p50": args.min_residual_p50,
+            "max_residual_ratio_p95": args.max_residual_ratio_p95,
             "min_router_accuracy": args.min_router_accuracy,
             "max_router_fm_degradation": args.max_router_fm_degradation,
             "max_router_oracle_gap": args.max_router_oracle_gap,
@@ -482,6 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-active-options", type=int, default=4)
     parser.add_argument("--max-dominant-share", type=float, default=0.80)
     parser.add_argument("--min-residual-p50", type=float, default=1.0e-4)
+    parser.add_argument("--max-residual-ratio-p95", type=float, default=0.25)
     parser.add_argument("--min-router-accuracy", type=float, default=0.35)
     parser.add_argument("--max-router-fm-degradation", type=float, default=0.02)
     parser.add_argument("--max-router-oracle-gap", type=float, default=0.10)

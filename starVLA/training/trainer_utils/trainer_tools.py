@@ -309,6 +309,39 @@ class TrainerUtils:
         return model
 
     @staticmethod
+    def reinitialize_modules(model, module_paths=None):
+        """Reset explicitly named modules after a warm-start load.
+
+        This is intentionally opt-in and requires each target module to expose
+        ``reset_parameters``.  Repair curricula can therefore preserve a
+        discovered codebook/posterior while discarding a collapsed conditioner.
+        """
+
+        paths = [
+            path.strip()
+            for path in str(module_paths or "").split(",")
+            if path.strip()
+        ]
+        for path in paths:
+            module = model
+            try:
+                for component in path.split("."):
+                    module = getattr(module, component)
+            except AttributeError as exc:
+                raise AttributeError(
+                    f"Cannot reinitialize missing module path {path!r}"
+                ) from exc
+            reset = getattr(module, "reset_parameters", None)
+            if not callable(reset):
+                raise TypeError(
+                    f"Module {path!r} does not expose reset_parameters()"
+                )
+            reset()
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"♻️ reinitialized module '{path}' after warm-start")
+        return model
+
+    @staticmethod
     def print_freeze_status(model):
         """
         print the freezing status of each parameter in the model

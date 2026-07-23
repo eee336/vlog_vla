@@ -71,6 +71,50 @@ def test_option_conditioner_has_option_sensitive_causal_path_after_update():
     assert not torch.allclose(out_a.option_token, out_b.option_token)
 
 
+def test_option_only_conditioner_has_no_state_or_embodiment_bypass():
+    conditioner = OptionConditioner(
+        8,
+        16,
+        16,
+        16,
+        rho=0.05,
+        conditioning_mode="option_only",
+        bound_outputs=True,
+    )
+    with torch.no_grad():
+        conditioner.film.weight.normal_(std=0.1)
+        conditioner.to_option_token.weight.normal_(std=0.1)
+    action = torch.randn(2, 5, 16)
+    option = torch.randn(2, 8)
+    out_a = conditioner(
+        action, option, torch.randn(2, 16), torch.randn(2, 16)
+    )
+    out_b = conditioner(
+        action, option, torch.randn(2, 16), torch.randn(2, 16)
+    )
+    torch.testing.assert_close(out_a.action_tokens, out_b.action_tokens)
+    torch.testing.assert_close(out_a.option_token, out_b.option_token)
+    assert out_a.beta.abs().max().item() <= 1.0
+    assert out_a.applied_residual.norm().item() > 0
+
+
+def test_option_only_repair_can_warm_start_legacy_conditioner_shapes():
+    legacy = OptionConditioner(8, 16, 16, 16, rho=0.05)
+    repair = OptionConditioner(
+        8,
+        16,
+        16,
+        16,
+        rho=0.05,
+        conditioning_mode="option_only",
+        bound_outputs=True,
+    )
+    incompatible = repair.load_state_dict(legacy.state_dict(), strict=False)
+    assert incompatible.unexpected_keys == []
+    assert incompatible.missing_keys
+    assert all(key.startswith("option_projection.") for key in incompatible.missing_keys)
+
+
 def test_semimarkov_controller_is_independent_and_resets_on_episode_change():
     controller = SemiMarkovController(d_min=2, d_max=4, hysteresis=0.2)
     logits = torch.tensor([[0.0, 2.0, 0.0], [3.0, 0.0, 0.0]])
@@ -272,6 +316,26 @@ def test_usage_balance_is_differentiable_not_a_hard_histogram_only():
     assert core.codebook.codebook.weight.grad is not None
     assert torch.isfinite(core.codebook.codebook.weight.grad).all()
     assert core.codebook.codebook.weight.grad.norm().item() > 0
+
+
+def test_codebook_separation_penalizes_collapsed_codes():
+    pytest.importorskip("diffusers")
+    from starVLA.model.vlog_vla.qwen_universal_vlog import UniversalVLOGCore
+
+    core = UniversalVLOGCore(
+        vl_dim=12,
+        dit_dim=8,
+        option_dim=6,
+        num_options=4,
+        commitment_cost=0.25,
+        codebook_cosine_margin=0.2,
+    )
+    with torch.no_grad():
+        core.codebook.codebook.weight.fill_(1.0)
+    loss = core.codebook_separation_loss()
+    assert loss.item() > 0
+    loss.backward()
+    assert core.codebook.codebook.weight.grad is not None
 
 
 def test_stage_freezing_keeps_u2_strictly_router_only(monkeypatch):

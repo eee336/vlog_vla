@@ -17,6 +17,7 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-5000}"
 NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-1000}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
+REINITIALIZE_MODULES="${REINITIALIZE_MODULES:-}"
 
 case "${TRAIN_STAGE}" in
   u0_base)
@@ -45,6 +46,7 @@ STARVLA_GRAD_ACCUM="${GRAD_ACCUM}" accelerate launch starVLA/training/train_star
   --framework.vlog.enabled "${VLOG_ENABLED}" \
   --framework.vlog.fusion_enabled "${FUSION_ENABLED}" \
   --trainer.pretrained_checkpoint "${BASE_CKPT}" \
+  --trainer.reinitialize_modules "${REINITIALIZE_MODULES}" \
   --trainer.is_resume false \
   --trainer.max_train_steps "${MAX_STEPS}" \
   --trainer.num_warmup_steps "${NUM_WARMUP_STEPS}" \

@@ -45,6 +45,11 @@ Option conditioner 产生：
 1. 一个显式 option token；
 2. 对 noisy action tokens 的 residual FiLM。
 
+当前 repair-mode conditioner 的输出只能由 option code 产生；state、embodiment
+和 projection bias 不能形成 code-independent adapter。RoboCasa base 也不再因为
+开启 option 而额外插入常量 embodiment token。FiLM beta/token 输出有界，日志报告
+的是乘过 `rho` 后实际加入 action token 的 residual 及其相对 action-token norm。
+
 正确、base 与 wrong-option FM 比较复用同一 observation、target、action mask、
 `t` 和 noise。Posterior 只在训练期看 future action；部署只使用 router 和持久化
 controller。
@@ -140,6 +145,26 @@ python scripts/vlog_vla/evaluate_universal_gates.py \
 报告只具有 offline E2 证据级别，不替代 Core-6 rollout。旧的
 `scripts/vlog_vla/analyze_options.py` 会生成合成占位序列，不能用于 UniversalVLOG
 Gate 或论文证据。
+
+### U1 conditioner repair
+
+若 legacy U1 出现“correct 显著优于 base，但 wrong/shuffle 几乎等于 correct”，
+不要降低 Gate 或直接蒸馏 router。这表明 conditioner 学成了公共 adapter。保留
+posterior/codebook，显式重置 conditioner 后运行短 repair curriculum：
+
+```bash
+BASE_CKPT=/absolute/path/to/legacy_u1_checkpoint.pt \
+RUN_ID=qwen_universal_vlog_robocasa_u1_option_repair \
+TRAIN_STAGE=u1_oracle \
+REINITIALIZE_MODULES=action_model.option_conditioner \
+MAX_STEPS=10000 BATCH_SIZE=16 GRAD_ACCUM=1 \
+SAVE_INTERVAL=2000 EVAL_INTERVAL=1000000 NUM_WARMUP_STEPS=500 \
+bash examples/simBenchmarks/Robocasa_tabletop/train_files/run_qwen_universal_vlog.sh
+```
+
+Repair 配置使用 option-only conditioner、bounded FiLM、随机 wrong code、以 base
+FM 为尺度的 5% relative counterfactual margin，以及 codebook cosine separation。
+不要同时增加 `num_options` 或 `fusion_residual_scale`，否则无法判断修复来自哪里。
 
 LIBERO U0-L：
 

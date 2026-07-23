@@ -49,24 +49,33 @@ framework:
     option_dim: 256
     fusion_enabled: true
     fusion_residual_scale: 0.05
+    # Repair-mode causal contract: neither state/embodiment nor learned biases
+    # can create an option-independent adapter in the conditioner.
+    conditioning_mode: option_only
+    bound_conditioning_outputs: true
+    inject_base_embodiment_token: false
     d_min: 2
     d_max: 8
     router_hysteresis: 0.15
     # Router-only U2 does not need a DiT forward for its CE objective.  Run
     # paired base/hard-router FM diagnostics only at this optimizer-step cadence.
     router_fm_diagnostics_every: 100
-    counterfactual_every: 4
+    counterfactual_every: 1
     counterfactual_margin: 0.05
+    counterfactual_margin_mode: relative_base
+    counterfactual_wrong_sampling: random
     improve_margin: 0.0
     commitment_cost: 0.25
+    codebook_cosine_margin: 0.2
     losses:
       lambda_fm: 1.0
       lambda_vq: 1.0
       lambda_commitment: 0.25
       lambda_usage: 0.05
+      lambda_codebook_separation: 0.1
       lambda_motion: 0.1
       lambda_router: 1.0
-      lambda_counterfactual: 0.2
+      lambda_counterfactual: 1.0
       lambda_improve: 0.2
 
 datasets:
@@ -107,6 +116,8 @@ trainer:
   # Required at launch.  Do not populate this from an old .vlog_vla.env.
   pretrained_checkpoint: null
   reload_modules: null
+  # Set explicitly at launch for U1 repair only. U2/U3 must leave this empty.
+  reinitialize_modules: null
   optimizer:
     name: AdamW
     betas: [0.9, 0.95]
