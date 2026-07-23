@@ -52,6 +52,9 @@ framework:
     d_min: 2
     d_max: 8
     router_hysteresis: 0.15
+    # Router-only U2 does not need a DiT forward for its CE objective.  Run
+    # paired base/hard-router FM diagnostics only at this optimizer-step cadence.
+    router_fm_diagnostics_every: 100
     counterfactual_every: 4
     counterfactual_margin: 0.05
     improve_margin: 0.0

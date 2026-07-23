@@ -1,5 +1,6 @@
 import copy
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -308,6 +309,48 @@ def test_stage_freezing_keeps_u2_strictly_router_only(monkeypatch):
         or name.startswith("action_model.embodiment_embedding.")
         for name in u0l_trainable
     )
+
+
+def test_u2_router_step_skips_non_diagnostic_fm_forwards(monkeypatch):
+    pytest.importorskip("diffusers")
+    from types import SimpleNamespace
+
+    import starVLA.model.vlog_vla.qwen_universal_vlog as universal_module
+
+    class FakeVLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.ones(1))
+            self.model = SimpleNamespace(config=SimpleNamespace(hidden_size=5))
+
+    config = _small_framework_config(stage="u2_router")
+    config.framework.action_model.repeated_diffusion_steps = 3
+    config.framework.vlog.router_fm_diagnostics_every = 100
+    monkeypatch.setattr(universal_module, "get_vlm_model", lambda config: FakeVLM())
+    model = universal_module.QwenUniversalVLOG(config)
+    model.set_optimizer_step(1)
+
+    def unexpected_flow(*args, **kwargs):
+        raise AssertionError("ordinary U2 router steps must not execute the DiT")
+
+    monkeypatch.setattr(model.action_model, "flow_forward", unexpected_flow)
+    examples = [
+        {
+            "state": np.zeros((1, 4), dtype=np.float32),
+            "action": np.zeros((3, 3), dtype=np.float32),
+        },
+        {
+            "state": np.ones((1, 4), dtype=np.float32),
+            "action": np.ones((3, 3), dtype=np.float32),
+        },
+    ]
+    output = model._group_forward(
+        torch.randn(2, 4, 5), None, examples, [0, 1], "robocasa_gr1"
+    )
+    assert output["total"].requires_grad
+    assert "fm_base" not in output
+    assert "fm_router" not in output
+    assert output["router_fm_diagnostics_triggered"].item() == 0.0
 
 
 def test_base_checkpoint_loader_rejects_missing_core_key(monkeypatch):

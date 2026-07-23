@@ -99,6 +99,7 @@ class QwenUniversalVLOGDefaultConfig(QwenGR00TDefaultConfig):
             "d_min": 2,
             "d_max": 8,
             "router_hysteresis": 0.15,
+            "router_fm_diagnostics_every": 100,
             "counterfactual_every": 4,
             "counterfactual_margin": 0.05,
             "improve_margin": 0.0,
@@ -740,30 +741,41 @@ class QwenUniversalVLOG(baseframework):
         actions, action_mask = self._action_group(
             examples, indices, embodiment, vl.device, vl.dtype
         )
-        repeats = int(
+        is_router_only = (
+            self._vlog_enabled() and self.vlog_train_stage == "u2_router"
+        )
+        configured_repeats = int(
             self.config.framework.action_model.get("repeated_diffusion_steps", 1)
         )
+        # Repeating identical observations only supplies extra FM noise draws.
+        # U2 has no FM objective, so replicas would duplicate router labels and
+        # waste memory/compute without increasing the observation batch.
+        repeats = 1 if is_router_only else configured_repeats
         vl = self._repeat(vl, repeats)
         mask_vl = self._repeat(mask_vl, repeats)
         state = self._repeat(state, repeats)
         actions = self._repeat(actions, repeats)
         action_mask = self._repeat(action_mask, repeats)
 
-        t = self.action_model.sample_time(
-            actions.shape[0], actions.device, actions.dtype
-        )
-        noise = torch.randn_like(actions)
-        base = self.action_model.flow_forward(
-            vl,
-            actions,
-            state,
-            embodiment,
-            action_mask=action_mask,
-            fusion_enabled=False,
-            t=t,
-            noise=noise,
-            encoder_attention_mask=mask_vl,
-        )
+        base = None
+        t = None
+        noise = None
+        if not is_router_only:
+            t = self.action_model.sample_time(
+                actions.shape[0], actions.device, actions.dtype
+            )
+            noise = torch.randn_like(actions)
+            base = self.action_model.flow_forward(
+                vl,
+                actions,
+                state,
+                embodiment,
+                action_mask=action_mask,
+                fusion_enabled=False,
+                t=t,
+                noise=noise,
+                encoder_attention_mask=mask_vl,
+            )
         if not self._vlog_enabled() or self.vlog_train_stage in {
             "u0_base",
             "u0_libero",
@@ -776,14 +788,24 @@ class QwenUniversalVLOG(baseframework):
                 "counterfactual_triggered": torch.zeros((), device=vl.device),
             }
 
-        state_tokens = self.action_model.encode_state(state, embodiment)
-        embodiment_embedding = self.action_model._embodiment_embedding(
-            embodiment, vl.shape[0], vl.device
-        )
-        state_feature = self.vlog_core.aggregate(vl, state_tokens, embodiment_embedding)
-        zero_t = torch.zeros(actions.shape[0], device=actions.device, dtype=torch.long)
-        future_tokens = self.action_model.encode_action(actions, zero_t, embodiment)
-        oracle = self.vlog_core.discover(state_feature, future_tokens, action_mask)
+        feature_context = torch.no_grad() if is_router_only else nullcontext()
+        with feature_context:
+            state_tokens = self.action_model.encode_state(state, embodiment)
+            embodiment_embedding = self.action_model._embodiment_embedding(
+                embodiment, vl.shape[0], vl.device
+            )
+            state_feature = self.vlog_core.aggregate(
+                vl, state_tokens, embodiment_embedding
+            )
+            zero_t = torch.zeros(
+                actions.shape[0], device=actions.device, dtype=torch.long
+            )
+            future_tokens = self.action_model.encode_action(
+                actions, zero_t, embodiment
+            )
+            oracle = self.vlog_core.discover(
+                state_feature, future_tokens, action_mask
+            )
         if self.vlog_train_stage == "u1_oracle":
             # Router is explicitly off in U1.  Compute only detached diagnostics
             # so a random frozen router cannot shape discovery representations.
@@ -794,30 +816,72 @@ class QwenUniversalVLOG(baseframework):
         router_loss = F.cross_entropy(routed["logits"], oracle["option_idx"].detach())
 
         if self.vlog_train_stage == "u2_router":
-            with torch.no_grad():
-                router_fm = self.action_model.flow_forward(
-                    vl,
-                    actions,
-                    state,
-                    embodiment,
-                    action_mask=action_mask,
-                    option_embedding=routed["option"],
-                    fusion_enabled=self._fusion_enabled(),
-                    t=t,
-                    noise=noise,
-                    encoder_attention_mask=mask_vl,
-                )
-            return {
+            router_correct = (
+                routed["option_idx"] == oracle["option_idx"].detach()
+            ).to(torch.float32)
+            result = {
                 "total": router_loss,
-                "fm_base": base["loss"].detach(),
-                "fm_router": router_fm["loss"].detach(),
                 "router_loss": router_loss.detach(),
+                "router_accuracy": router_correct.mean().detach(),
+                "router_confidence": routed["probs"].max(dim=-1).values.mean().detach(),
                 "vq_loss": oracle["vq_loss"].detach(),
                 "option_entropy": (
                     -(routed["probs"] * (routed["probs"] + 1e-8).log()).sum(-1).mean()
                 ).detach(),
                 "counterfactual_triggered": torch.zeros((), device=vl.device),
             }
+            vlog_cfg = self.config.framework.vlog
+            diagnostics_every = max(
+                1, int(vlog_cfg.get("router_fm_diagnostics_every", 100))
+            )
+            trigger_diagnostics = self._optimizer_step % diagnostics_every == 0
+            result["router_fm_diagnostics_triggered"] = torch.tensor(
+                float(trigger_diagnostics), device=vl.device, dtype=torch.float32
+            )
+            if trigger_diagnostics:
+                diagnostic_t = self.action_model.sample_time(
+                    actions.shape[0], actions.device, actions.dtype
+                )
+                diagnostic_noise = torch.randn_like(actions)
+                # Deployment uses the hard, persistent option code rather than
+                # the router's soft codebook mixture.  Diagnose that exact path.
+                hard_router_option = self.vlog_core.codebook.codebook(
+                    routed["option_idx"]
+                )
+                with torch.no_grad():
+                    base_diagnostic = self.action_model.flow_forward(
+                        vl,
+                        actions,
+                        state,
+                        embodiment,
+                        action_mask=action_mask,
+                        fusion_enabled=False,
+                        t=diagnostic_t,
+                        noise=diagnostic_noise,
+                        encoder_attention_mask=mask_vl,
+                    )
+                    router_fm = self.action_model.flow_forward(
+                        vl,
+                        actions,
+                        state,
+                        embodiment,
+                        action_mask=action_mask,
+                        option_embedding=hard_router_option,
+                        fusion_enabled=self._fusion_enabled(),
+                        t=diagnostic_t,
+                        noise=diagnostic_noise,
+                        encoder_attention_mask=mask_vl,
+                    )
+                residual_norm = router_fm["fusion_residual"].float().norm(dim=-1)
+                result.update(
+                    {
+                        "fm_base": base_diagnostic["loss"].detach(),
+                        "fm_router": router_fm["loss"].detach(),
+                        "fusion_residual_p50": residual_norm.quantile(0.5).detach(),
+                        "fusion_residual_p95": residual_norm.quantile(0.95).detach(),
+                    }
+                )
+            return result
 
         correct = self.action_model.flow_forward(
             vl,

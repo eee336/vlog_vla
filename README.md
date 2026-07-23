@@ -76,6 +76,11 @@ GR00T 核心键缺失/shape mismatch，加载直接失败；只有新增的 Univ
 
 `u0_base` 不是训练 stage，启动脚本会拒绝对全冻结模型执行 backward。
 
+U2 的监督目标只是 posterior/codebook 产生的 oracle option ID。普通 U2 step
+不会执行 DiT；每 `router_fm_diagnostics_every` 步才使用部署时的 hard routed
+option 做一次 paired base/router FM 诊断。`repeated_diffusion_steps` 在 U2
+自动按 1 处理，避免复制相同 router 标签。
+
 ## 安装与 CPU 测试
 
 本仓库不捆绑 CUDA/PyTorch 轮子。先使用已验证可运行 StarVLA 的环境：
@@ -107,10 +112,34 @@ RoboCasa U1/U2/U3 使用同一配置和脚本，通过 stage 与 checkpoint 串�
 
 ```bash
 BASE_CKPT=/absolute/path/to/compatible_checkpoint.pt \
+RUN_ID=qwen_universal_vlog_robocasa_u1 \
 TRAIN_STAGE=u1_oracle \
 BATCH_SIZE=8 GRAD_ACCUM=1 MAX_STEPS=30000 \
 bash examples/simBenchmarks/Robocasa_tabletop/train_files/run_qwen_universal_vlog.sh
 ```
+
+`GRAD_ACCUM` 现在会在创建 `Accelerator` 时生效，并与保存的 config 做一致性
+检查。日志中的 `Total observation batch size` 才是独立 observation 数；
+`repeated_diffusion_steps` 是每个 observation 的 FM noise draws，不能再次算作
+独立 batch。
+
+## Offline Gate O/R
+
+U1/U2 晋级不得只看训练日志中的标量均值。对每个候选 checkpoint 使用固定
+audit subset，复用完全相同的 observation、target、mask、FM `t` 和 noise，执行
+base/correct/wrong/shuffle/hard-router paired intervention：
+
+```bash
+python scripts/vlog_vla/evaluate_universal_gates.py \
+  --checkpoint /absolute/path/to/steps_30000_pytorch_model.pt \
+  --output outputs/universal_gates/u1_steps_30000.json \
+  --batch-size 16 --num-batches 32 --fm-repeats 2 \
+  --device cuda
+```
+
+报告只具有 offline E2 证据级别，不替代 Core-6 rollout。旧的
+`scripts/vlog_vla/analyze_options.py` 会生成合成占位序列，不能用于 UniversalVLOG
+Gate 或论文证据。
 
 LIBERO U0-L：
 

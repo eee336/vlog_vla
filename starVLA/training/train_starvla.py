@@ -15,6 +15,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -40,11 +41,58 @@ from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
+
+def _bootstrap_gradient_accumulation_steps(argv=None) -> int:
+    """Resolve accumulation before constructing :class:`Accelerator`.
+
+    ``Accelerator`` used to be created at import time with its default of one,
+    so changing ``trainer.gradient_accumulation_steps`` in YAML/CLI only
+    changed the run metadata, not optimization.  Resolve the same value from
+    CLI, then environment, then YAML so the runtime and saved config cannot
+    silently disagree.
+    """
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    flag = "--trainer.gradient_accumulation_steps"
+    for index, arg in enumerate(args):
+        if arg.startswith(flag + "="):
+            return max(1, int(arg.split("=", 1)[1]))
+        if arg == flag and index + 1 < len(args):
+            return max(1, int(args[index + 1]))
+
+    env_value = os.getenv("STARVLA_GRAD_ACCUM")
+    if env_value is not None:
+        return max(1, int(env_value))
+
+    config_path = None
+    for index, arg in enumerate(args):
+        if arg.startswith("--config_yaml="):
+            config_path = arg.split("=", 1)[1]
+            break
+        if arg == "--config_yaml" and index + 1 < len(args):
+            config_path = args[index + 1]
+            break
+    if config_path and Path(config_path).is_file():
+        raw_cfg = OmegaConf.load(config_path)
+        configured = OmegaConf.select(
+            raw_cfg, "trainer.gradient_accumulation_steps", default=1
+        )
+        return max(1, int(configured))
+    return 1
+
+
+_BOOTSTRAP_GRAD_ACCUM = _bootstrap_gradient_accumulation_steps()
+
 if os.getenv("STARVLA_USE_DEEPSPEED", "1") == "1":
     deepspeed_plugin = DeepSpeedPlugin()
-    accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+    accelerator = Accelerator(
+        deepspeed_plugin=deepspeed_plugin,
+        gradient_accumulation_steps=_BOOTSTRAP_GRAD_ACCUM,
+    )
 else:
-    accelerator = Accelerator()
+    accelerator = Accelerator(
+        gradient_accumulation_steps=_BOOTSTRAP_GRAD_ACCUM
+    )
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -431,7 +479,16 @@ class VLATrainer(TrainerUtils):
             logger.info(f"  Total optimization steps = {self.config.trainer.max_train_steps}")
             logger.info(f"  Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
             logger.info(f"  Gradient accumulation steps = {self.accelerator.gradient_accumulation_steps}")
-            logger.info(f"  Total batch size = {self.total_batch_size}")
+            logger.info(f"  Total observation batch size = {self.total_batch_size}")
+            fm_repeats = int(
+                self.config.framework.action_model.get(
+                    "repeated_diffusion_steps", 1
+                )
+            )
+            logger.info(f"  FM noise samples per observation = {fm_repeats}")
+            logger.info(
+                f"  Total FM samples per optimizer step = {self.total_batch_size * fm_repeats}"
+            )
 
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
@@ -554,6 +611,16 @@ if __name__ == "__main__":
     # This is idempotent and does not modify framework class signatures.
     # See bar/config_收紧.md for the rationale.
     cfg = apply_config_compat(cfg)
+
+    configured_accum = int(cfg.trainer.get("gradient_accumulation_steps", 1))
+    if configured_accum != accelerator.gradient_accumulation_steps:
+        raise RuntimeError(
+            "gradient accumulation mismatch: config requests "
+            f"{configured_accum}, but Accelerator was initialized with "
+            f"{accelerator.gradient_accumulation_steps}. Pass "
+            "--trainer.gradient_accumulation_steps explicitly or set "
+            "STARVLA_GRAD_ACCUM to the same value."
+        )
 
     # Store source config path for later copying to output dir
     cfg.config_yaml = args.config_yaml

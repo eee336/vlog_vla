@@ -11,6 +11,10 @@ TRAIN_STAGE="${TRAIN_STAGE:-u1_oracle}"
 MAX_STEPS="${MAX_STEPS:-30000}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
+RUN_ID="${RUN_ID:-qwen_universal_vlog_robocasa_${TRAIN_STAGE}}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-5000}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-5000}"
+NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-1000}"
 
 case "${TRAIN_STAGE}" in
   u0_base)
@@ -31,8 +35,9 @@ case "${TRAIN_STAGE}" in
     ;;
 esac
 
-accelerate launch starVLA/training/train_starvla.py \
+STARVLA_GRAD_ACCUM="${GRAD_ACCUM}" accelerate launch starVLA/training/train_starvla.py \
   --config_yaml "${CONFIG_YAML}" \
+  --run_id "${RUN_ID}" \
   --framework.name QwenUniversalVLOG \
   --framework.vlog.train_stage "${TRAIN_STAGE}" \
   --framework.vlog.enabled "${VLOG_ENABLED}" \
@@ -40,5 +45,8 @@ accelerate launch starVLA/training/train_starvla.py \
   --trainer.pretrained_checkpoint "${BASE_CKPT}" \
   --trainer.is_resume false \
   --trainer.max_train_steps "${MAX_STEPS}" \
+  --trainer.num_warmup_steps "${NUM_WARMUP_STEPS}" \
+  --trainer.save_interval "${SAVE_INTERVAL}" \
+  --trainer.eval_interval "${EVAL_INTERVAL}" \
   --trainer.gradient_accumulation_steps "${GRAD_ACCUM}" \
   --datasets.vla_data.per_device_batch_size "${BATCH_SIZE}"
