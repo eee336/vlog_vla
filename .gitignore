@@ -64,3 +64,14 @@ htmlcov/
 dist/
 build/
 *.egg
+
+# AAAI paper local build products
+aaai_paper/*.aux
+aaai_paper/*.bbl
+aaai_paper/*.blg
+aaai_paper/*.fdb_latexmk
+aaai_paper/*.fls
+aaai_paper/*.log
+aaai_paper/*.out
+aaai_paper/*.synctex.gz
+aaai_paper/main.pdf

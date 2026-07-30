@@ -1,0 +1,20 @@
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.92\columnwidth}{\centering
+\textbf{FIGURE PLACEHOLDER F3: Persistent controller}\\[0.4em]
+Episode reset \(\rightarrow\) initialize router argmax\\
+\(\downarrow\)\\
+\(d<d_{\min}\): retain active code\\
+\(\downarrow\)\\
+\(d_{\min}\le d<d_{\max}\): switch only if router-logit margin
+\(>\delta\)\\
+\(\downarrow\)\\
+\(d\ge d_{\max}\): reselect (same code remains possible)\\[0.25em]
+Inset: one colored option band spanning several action chunks; mark decision
+age and environment-step duration separately.}}
+\caption{\textbf{Explicit semi-Markov persistence.}  Independent state is
+maintained for each rollout stream and reset by episode ID.  Maximum age causes
+reselection, not a forced change, and no learned termination or value signal is
+used.}
+\label{fig:persistence}
+\end{figure}

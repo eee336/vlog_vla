@@ -1,0 +1,172 @@
+\section{Experiments}
+
+This section is written as an executable evaluation contract.  The local paper
+workspace contains the latest event-balanced source and unit-test
+specifications, but no training-machine checkpoint, Gate O/R JSON, or
+UniversalVLOG simulator rollout.  Accordingly, unavailable values remain
+visible placeholders rather than being filled with results from the
+incompatible legacy Qwen-OFT model.
+
+\input{tables/evaluation_status}
+
+\subsection{Research Questions}
+
+We organize evaluation around five questions.
+\begin{description}
+    \item[RQ1: Base validity.] Does the universal wrapper strictly load the
+    official Qwen/GR00T core and preserve fusion-off velocity/action outputs?
+    \item[RQ2: Option causality.] Does the future-action oracle outperform
+    wrong and shuffled codes under paired flow time and noise without
+    degrading the fusion-off base?
+    \item[RQ3: Router recovery.] Can a hard current-context router recover the
+    oracle's code use and action loss when posterior information is removed?
+    \item[RQ4: Temporal utility.] Does explicit persistence improve task success
+    or temporal failure modes over fusion-off, per-query, and fixed-duration
+    controls?
+    \item[RQ5: Shared embodiment interface.] Can one Qwen/DiT/codebook support
+    RoboCasa and LIBERO through native adapters without unacceptable forgetting
+    or systems overhead?
+\end{description}
+
+\input{tables/rq_evidence_map}
+
+\subsection{Benchmarks and Protocol}
+
+\paragraph{RoboCasa-GR1.}
+The base route uses the native \(58\)-D state, \(29\)-D action, and horizon
+\(16\) contract declared by the official GR00T-style checkpoint.  U0 first
+reproduces a locked subset of RoboCasa-GR1 tasks before any option training.
+The final task manifest, simulator revision, camera views, episode cap,
+normalization key, action execution rate, and rollouts per task are
+\textbf{[PROTOCOL PLACEHOLDER: ROBOCASA-MANIFEST]}.
+
+\paragraph{LIBERO.}
+The additional embodiment uses native \(7\)-D state and action adapters and is
+evaluated on LIBERO-Spatial, LIBERO-Object, LIBERO-Goal, and LIBERO-10.
+The final dataset version, observation view, action convention, executed chunk
+prefix, simulator revision, and episode seeds are
+\textbf{[PROTOCOL PLACEHOLDER: LIBERO-MANIFEST]}.
+
+\paragraph{Pairing and checkpoint selection.}
+All compared policies receive the same task/initial-state seeds.  Training seeds
+are the unit of model variability; episode-level pairing is used within a seed.
+Checkpoints are selected by a predeclared validation rule before test rollout.
+No method is selected on the reported test average.  Exact seeds, denominators,
+confidence interval method, and failed-run policy are
+\textbf{[PROTOCOL PLACEHOLDER: STATISTICAL-PROTOCOL]}.
+
+\subsection{Baselines and Controlled Variants}
+
+The minimum comparison set isolates initialization, capacity, option identity,
+routing, and persistence:
+\begin{itemize}
+    \item \textbf{Official flow base:} original Qwen/GR00T policy on its base
+    embodiment.
+    \item \textbf{Universal fusion-off:} the new wrapper with VLOG disabled;
+    required to match the base action-head path.
+    \item \textbf{Native-adapter base:} U0-native on a non-base embodiment with
+    no option path.
+    \item \textbf{Option-independent adapter:} a parameter-matched residual that
+    cannot vary by option, testing added capacity.
+    \item \textbf{Oracle option:} training-time posterior code, used only for
+    offline upper-bound diagnostics.
+    \item \textbf{Per-query router:} hard routed code with controller memory
+    disabled.
+    \item \textbf{Fixed duration:} hard routed code retained for a fixed number
+    of queries.
+    \item \textbf{Persistent VLOG:} hard router plus the \(d_{\min}/d_{\max}\)
+    hysteretic controller.
+    \item \textbf{Wrong/shuffled code:} paired negative interventions, not
+    deployable baselines.
+\end{itemize}
+If U3 updates the shared action expert, a matched continued-fine-tuning control
+uses the same optimizer steps, data, and shared-expert learning rate.
+
+\subsection{Base and Systems Validation}
+
+Before training options, the evaluation records: strict checkpoint key/shape
+coverage; cached action-head parity at identical state, visual features,
+\(\tau\), and noise; deterministic seeded action parity; normalization
+round-trip by action dimension; variable-horizon masking; per-stage trainable
+parameters; and GPU forward/backward/predict memory and time.  RoboCasa
+fusion-off rollout must meet a predeclared base floor before U0-native or U1.
+For mixed embodiments, batches are partitioned by embodiment, evaluated through
+the shared Qwen/DiT, and reduced by observation count.
+
+\subsection{Offline Gate O and Gate R}
+
+The released evaluator repeats paired flow interventions on a fixed audit
+subset.  For each observation we compute
+\[
+\begin{aligned}
+\Delta_{-\!+}&=\mathcal{L}_{-}-\mathcal{L}_{+},&
+\Delta_{\mathrm{sh}\!+}&=\mathcal{L}_{\mathrm{shuffle}}-\mathcal{L}_{+},\\
+\Delta_{0+}&=\mathcal{L}_{0}-\mathcal{L}_{+}.&&
+\end{aligned}
+\]
+Gate O requires positive confidence intervals for wrong/shuffled gaps, a
+nonnegative oracle-vs-base gap, sufficient active codes at a minimum usage
+share, sufficient effective option number, bounded dominant share, nonzero
+residual, and bounded residual-to-action-token ratio.  When event balancing is
+enabled, the gate also records option--event normalized mutual information
+against a shuffled-code baseline; event IDs remain balancing strata rather than
+semantic labels.  We also report codebook cosine similarity and
+option-conditioned velocity difference.
+
+Gate R reports hard-router accuracy against posterior IDs, router cross-entropy,
+active-code count, effective option number, dominant share, router-vs-oracle
+flow gap, and router-vs-base degradation.  Raw ID accuracy is interpreted
+together with action loss because different codes may be behaviorally
+equivalent.  All Gate statistics are reported separately by embodiment as well
+as globally.
+
+\input{figures/gate_diagnostics}
+
+\subsection{Rollout Evaluation}
+
+The primary metric is simulator success, reported as successes/episodes and
+percentage for every task and training seed.  To test the temporal mechanism,
+we additionally record option changes per episode, decision-duration and
+environment-step duration, \(d_{\max}\) reselection rate, router hysteresis
+switches, code-use entropy, and episode reset correctness.  Task benefit is
+credited to persistence only if persistent VLOG improves beyond fusion-off,
+option-independent, per-query, and fixed-duration controls without option
+collapse.
+
+\input{tables/main_results}
+
+\subsection{Ablations and Cross-Embodiment Analysis}
+
+The ablation matrix varies option token, FiLM, option-only conditioning,
+counterfactual and improve losses, router persistence, \(K\), and whether the
+shared DiT is jointly tuned.  Cross-embodiment analysis reports global and
+per-embodiment code usage, mutual information between code and embodiment,
+RoboCasa retention after LIBERO adaptation, and separate Gate O/R results.
+A shared codebook is supported only if its effect is not explained entirely by
+embodiment identity.
+
+\input{tables/ablation_results}
+
+\subsection{Qualitative and Failure Evidence}
+
+For predeclared task/seed strata, synchronized video frames are aligned with
+query ID, active code, router candidate, decision age, switch reason, and action
+chunk.  We include both a supported recovery and a hierarchy-specific failure
+when they exist; ambiguous failures remain unattributed.  Code colors are
+identifiers, not semantic names.
+
+\input{figures/rollout_evidence}
+
+\subsection{Efficiency, Statistics, and Artifacts}
+
+Matched profiling reports total/trainable/added parameters, inference latency,
+peak memory, and throughput for fusion-off and persistent variants on identical
+hardware, precision, image inputs, batch convention, and warm-up.  Success
+comparisons use paired episode outcomes within each model seed and confidence
+intervals over the predeclared aggregation unit.  Every populated cell must
+trace to source commit and diff, resolved configuration, checkpoint, dataset
+manifest, raw per-episode record, aggregation command, and file hash.
+
+\textbf{[RESULT PLACEHOLDER: populate Tables~\ref{tab:main-results} and
+\ref{tab:ablation-results}, Figure~\ref{fig:gate-diagnostics}, and
+Figure~\ref{fig:rollout-evidence} only from verified UniversalVLOG artifacts.]}

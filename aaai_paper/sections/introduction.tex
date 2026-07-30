@@ -1,0 +1,83 @@
+\section{Introduction}
+
+Vision-language-action (VLA) policies map images, language instructions, and
+robot state to executable controls across many tasks and embodiments
+~\citep{brohan2022rt1,brohan2023rt2,kim2024openvla,black2024pi0}.  Continuous
+action experts based on diffusion or flow matching further let a policy produce
+smooth multi-step action chunks~\citep{chi2023diffusion,black2024pi0,bjorck2025groot}.
+These advances answer a local question well: given the current multimodal
+context, what short sequence of controls should be generated next?
+
+Long manipulation episodes also require a decision that spans policy queries.
+An action chunk has a fixed decoder horizon, whereas a behavioral phase may
+last for several chunks and end at a state-dependent boundary.  Increasing the
+chunk horizon does not create an explicit variable for that phase; after the
+next observation, a flat policy can reverse, repeat a completed behavior, or
+drift between locally plausible actions.  We therefore ask whether a VLA can
+learn a discrete controller state that conditions more than one action chunk
+without replacing its pretrained multimodal backbone or continuous action
+expert.
+
+This question has a subtle failure mode.  Adding a latent code and an adapter
+does not ensure that the code matters.  A strong action expert may ignore the
+latent, a conditioner may learn an option-independent residual, a codebook may
+collapse, or persistence may simply prolong a wrong decision.  A useful latent
+controller must consequently satisfy three gates: an oracle code inferred from
+future demonstrated actions must improve or specialize action prediction
+relative to wrong and shuffled codes; a deployment router must recover that
+code using only available context; and retaining routed codes must improve
+rollouts relative to per-query and fusion-off controls.
+
+We introduce \textbf{VLOG-VLA}, implemented in the modular StarVLA framework
+~\citep{community2026starvla}.  Its current mainline, \texttt{QwenUniversalVLOG},
+starts from a Qwen3-VL backbone~\citep{bai2025qwen3vl} and a GR00T-style
+flow-matching action expert.  One Qwen backbone and one DiT are shared across
+embodiments.  Native state and action adapters map each robot directly to and
+from the shared DiT token space; a seven-dimensional LIBERO action is never
+projected through a humanoid robot's twenty-nine-dimensional physical action
+coordinates.
+
+The option interface is deliberately placed at the action-expert boundary.
+During training, a posterior encodes the current aggregated context and a
+short-event-sensitive summary of encoded future native actions, then assigns
+them to a vector-quantized codebook.  The summary includes masked mean,
+variation, endpoint displacement, and maximum adjacent change, so brief gripper
+or reorientation events are not erased by averaging over a long chunk.  Coarse
+motion-event strata reweight discovery examples, but never supervise option
+IDs.  A router sees only current context.  The selected code contributes an
+explicit DiT option token and a bounded residual FiLM perturbation of noisy
+action tokens.  Final projections are zero initialized for base preservation,
+and the repair-mode conditioner depends only on option identity, preventing a
+shared state or bias path from passing an apparent oracle-vs-base gate while
+remaining invariant to wrong codes.
+
+At inference, a per-environment controller stores the active option and its age.
+It enforces a minimum duration, permits hysteretic switches when a new router
+candidate is sufficiently better, and reselects at a maximum age.  This is an
+explicit semi-Markov control rule, not learned termination.  The current method
+also excludes graph, critic, value guidance, RL/CQL, and learned-termination
+claims.  This narrower design follows the evidence boundary of the latest
+source and keeps the central question testable.
+
+Our contributions are:
+\begin{itemize}
+    \item \textbf{A shared flow-matching option interface.} We insert a
+    discrete latent controller into one shared Qwen/DiT VLA while retaining
+    native state and action boundaries for heterogeneous embodiments.
+    \item \textbf{Option-specific, behavior-preserving conditioning.} An
+    explicit option token and bounded action-token FiLM are zero initialized,
+    while an option-only repair path removes code-independent conditioning
+    shortcuts.
+    \item \textbf{Imbalance-aware, evidence-gated optimization.} Base parity,
+    event-balanced oracle discovery, weighted router distillation, and joint
+    tuning are separated; correct, base, wrong, shuffled, and hard-router flow
+    losses reuse the same observations, masks, interpolation times, and noise.
+    \item \textbf{Explicit cross-query control.} Independent controller state
+    for each environment makes option duration, reset, and switching directly
+    observable and comparable with per-query and fixed-duration controls.
+\end{itemize}
+
+The contribution is an implemented and falsifiable interface; benchmark
+superiority is not assumed.  Figure and result placeholders in this draft
+state the exact evidence needed to promote the architecture from source-level
+support to an empirical claim.

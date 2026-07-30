@@ -1,0 +1,21 @@
+\begin{figure*}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering
+\textbf{FIGURE PLACEHOLDER F4: Training curriculum and evidence gates}\\[0.45em]
+\begin{tabular}{c|c|c}
+\textbf{Stage} & \textbf{Trainable path} & \textbf{Required evidence}\\
+\hline
+U0-base & none & strict load, fusion-off parity, base rollout\\
+U0-native & native adapters + embodiment embedding & native rollout, base retention\\
+U1-oracle & aggregator/posterior/codebook/conditioner & Gate O: base/correct/wrong/shuffle\\
+U2-router & router only & Gate R: hard-router recovery/action loss\\
+U3-joint & shared DiT/adapters/VLOG; Qwen frozen & paired rollout non-inferiority/benefit
+\end{tabular}\\[0.4em]
+Below the stages, show immutable artifacts: resolved config, checkpoint, gate
+JSON, per-episode result, option timeline, and profiler report.}}
+\caption{\textbf{Separated optimization and promotion gates.}  The schedule
+prevents router training from changing an oracle mapping that has already
+passed Gate O.  Offline flow gates validate mechanisms; simulator rollouts are
+still required for task claims.}
+\label{fig:objectives}
+\end{figure*}

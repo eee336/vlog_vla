@@ -1,0 +1,238 @@
+\section{Appendix}
+
+\subsection{Source and Evidence Scope}
+
+The method description is audited against
+\texttt{codex/qwen-universal-vlog-v2}, commit
+\texttt{4111898f91553585d85a579e6f85292aef1ff3d9}.  The active framework is
+\texttt{QwenUniversalVLOG}.  Legacy \texttt{QwenOFTVLOG}, option graph, critic,
+learned termination, Stage5/6, RL, and CQL code remains in the repository for
+historical analysis but is not part of the method described here.
+
+The paper-editing machine does not contain a qualifying UniversalVLOG
+checkpoint, training log, Gate O/R JSON, simulator episode record, or profiler
+report.  It also lacks the \texttt{pytest} package, so the source unit tests were
+read but not rerun during this pass.  All empirical entries therefore remain
+pending.
+
+\subsection{Notation}
+
+\begin{table}[h]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+\(e\) & embodiment identifier \\
+\(t\) & policy-query index \\
+\(\tau\) & flow interpolation time \\
+\(H\) & action prediction horizon \\
+\(d_a^e,d_s^e\) & native action/state dimensions \\
+\(d_D\) & shared DiT token width \\
+\(z_t,c_k,K\) & active option, code vector, codebook size \\
+\(d_t\) & option age in policy decisions \\
+\(\rho\) & fixed option residual scale \\
+\(\delta\) & router-logit hysteresis margin \\
+\(\operatorname{sg}\) & stop-gradient operator \\
+\bottomrule
+\end{tabular}
+\caption{Notation used in the main text.}
+\label{tab:notation}
+\end{table}
+
+\subsection{Embodiment Tensor Contract}
+
+\begin{table*}[h]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
+\toprule
+Embodiment & Native state & Native action & Horizon & State tokens & Shared width & Initialization \\
+\midrule
+RoboCasa-GR1 & \(58\) & \(29\) & \(16\) & \(1\) & \(1024\) & official GR00T paths \\
+LIBERO & \(7\) & \(7\) & up to \(16\) & \(1\) & \(1024\) & native adapters \\
+Additional robot & configured & configured & up to \(16\) & configured & \(1024\) & native adapters \\
+\bottomrule
+\end{tabular}
+\caption{Declared tensor contract in the active example configurations.  Final
+evaluated values must be copied from the resolved run configuration.}
+\label{tab:tensor-contract}
+\end{table*}
+
+The fusion-off base sequence is
+\[
+[\text{state tokens},\text{future-query tokens},\text{noisy-action tokens}].
+\]
+The option-conditioned sequence is
+\[
+\begin{aligned}
+\mathcal{T}_k=[&\text{state},\text{non-base embodiment}_e,\text{option}_k,\\
+               &\text{future queries},\text{conditioned noisy actions}_k].
+\end{aligned}
+\]
+The base-embodiment token is disabled in the current repair configuration so
+turning on options does not add a constant embodiment-only adapter.
+
+\subsection{Active Module and Source Map}
+
+\begin{table*}[h]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.24\textwidth}p{0.57\textwidth}p{0.12\textwidth}}
+\toprule
+Component & Source & Status \\
+\midrule
+Framework and paired FM & \texttt{qwen\_universal\_vlog.py} & Implemented \\
+Native adapter bank & \texttt{universal\_adapters.py} & Implemented \\
+Option conditioner & \texttt{option\_conditioner.py} & Implemented \\
+Persistent controller & \texttt{semimarkov\_controller.py} & Implemented \\
+Registry bridge & \texttt{QwenUniversalVLOG.py} & Implemented \\
+Gate evaluator & \texttt{evaluate\_universal\_gates.py} & Implemented \\
+CPU test specification & \texttt{test\_qwen\_universal\_vlog\_modules.py} & Not rerun here \\
+RoboCasa config/launcher & \texttt{Robocasa\_tabletop/train\_files/} & Implemented \\
+LIBERO config & \texttt{starvla\_qwen\_universal\_vlog\_libero.yaml} & Implemented \\
+\bottomrule
+\end{tabular}
+\caption{Source files used for the paper audit.  Model files are under
+\texttt{starVLA/model/vlog\_vla/}; evaluator, tests, and configurations are
+under their corresponding repository directories.  ``Implemented'' is not a
+training or benchmark result.}
+\label{tab:source-map}
+\end{table*}
+
+\subsection{Stage Freeze Map}
+
+\begin{table*}[h]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.13\textwidth}p{0.36\textwidth}p{0.42\textwidth}}
+\toprule
+Stage & Trainable & Frozen / excluded \\
+\midrule
+U0-base & none & all modules; VLOG off \\
+U0-native & non-base native adapters, embodiment embedding & Qwen, shared DiT, VLOG \\
+U1-oracle & aggregator, posterior, codebook, motion decoder, conditioner & Qwen, DiT, adapters, router \\
+U2-router & router only & posterior, codebook, conditioner, Qwen, DiT, adapters \\
+U3-joint & shared DiT, adapters, conditioner, option modules, router & Qwen; graph/critic/termination absent \\
+\bottomrule
+\end{tabular}
+\caption{Implemented stage isolation.  The resolved optimizer must be checked
+against this table for every run.}
+\label{tab:stage-freeze}
+\end{table*}
+
+\subsection{Reference Hyperparameters}
+
+\begin{table}[h]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lc}
+\toprule
+Quantity & Reference value \\
+\midrule
+Options \(K\) & \(8\) \\
+Option dimension & \(256\) \\
+Residual scale \(\rho\) & \(0.05\) \\
+Conditioner & option-only, bounded \\
+\(d_{\min}/d_{\max}\) & \(2/8\) decisions \\
+Router hysteresis & \(0.15\) logits \\
+Counterfactual cadence & every optimizer step \\
+Wrong code sampling & random, guaranteed different \\
+CF margin & \(0.05\,\operatorname{sg}(\mathcal{L}_0)\) \\
+Code cosine margin & \(0.2\) \\
+Usage entropy floor & \(0.75\log K\) \\
+Event-balance mix / power & \(0.5/0.5\) \\
+Router-balance mix / power & \(1.0/0.5\) \\
+Minimum active option share & \(0.01\) \\
+Flow inference steps & \(4\) \\
+\bottomrule
+\end{tabular}
+\caption{Reference values in the latest example configurations.  Final tables
+must use the resolved evaluated configuration.}
+\label{tab:reference-hyperparameters}
+\end{table}
+
+\subsection{Gate Definitions}
+
+The default offline gate evaluator requests at least \(256\) observations.
+Gate O checks: a positive 95\% confidence interval for wrong and shuffled loss
+gaps; relative gaps of at least \(5\%\) and \(2\%\), respectively; no mean
+oracle degradation from base; at least four active options with at least
+\(1\%\) share; effective option number at least \(3\); dominant share at most
+\(0.8\); median applied residual at least \(10^{-4}\); and 95th-percentile
+residual ratio at most \(0.25\).  When event IDs are available, option--event
+NMI must exceed a shuffled-code baseline by at least \(0.02\).  Gate R
+additionally checks router accuracy at least \(0.35\), at least four routed
+options with at least \(1\%\) share, effective option number at least \(3\),
+dominant share at most \(0.8\), router flow degradation from base at most
+\(2\%\), and router-oracle flow gap at most \(10\%\).  These are initial
+engineering thresholds, not universal scientific constants; they must be
+frozen before checkpoint selection.
+
+\input{tables/option_statistics}
+
+\subsection{Training and Inference Pseudocode}
+
+\paragraph{U1 oracle step.}
+\begin{enumerate}
+    \item Encode images/instruction with Qwen3-VL and native state with
+    \(E_s^e\).
+    \item Encode the demonstrated native action chunk with \(E_a^e\) at
+    \(\tau=0\); summarize masked mean, variation, endpoint displacement, and
+    peak adjacent change; infer and quantize the posterior option.
+    \item If event balancing is enabled, classify the native chunk by temporal
+    change strata and compute checkpointed inverse-frequency discovery weights.
+    \item Sample one \(\tau,\epsilon\), then compute fusion-off and
+    correct-option flow losses with the same pair.
+    \item At the configured optimizer cadence, sample a guaranteed-different
+    code and compute the wrong-option flow loss using the same pair.
+    \item Optimize flow, weighted VQ/commitment, entropy-floor usage,
+    separation, weighted motion, counterfactual, and improve losses; keep the
+    router frozen.
+\end{enumerate}
+
+\paragraph{U2 router step.}
+\begin{enumerate}
+    \item Recompute the frozen posterior label and current-context state
+    feature without gradient.
+    \item Optimize router cross-entropy only, using posterior-code
+    inverse-frequency weights when router balancing is enabled.
+    \item At the diagnostic cadence, pass the hard routed code through the
+    frozen action expert and compare its flow loss with base and oracle.
+\end{enumerate}
+
+\paragraph{Inference query.}
+\begin{enumerate}
+    \item Encode current visual/language/state inputs; do not provide future
+    actions.
+    \item Compute hard router logits and update the controller for the supplied
+    environment/episode IDs.
+    \item Embed the active code, create its option token and FiLM residual, and
+    integrate the shared flow expert.
+    \item Decode the normalized native action chunk and record it in the
+    corresponding controller stream.
+\end{enumerate}
+
+\subsection{Required Qualitative Evidence}
+
+\input{figures/option_timeline}
+\input{figures/failure_cases}
+
+\subsection{Efficiency and Reproducibility}
+
+\input{tables/efficiency}
+\input{tables/reproducibility}
+
+\subsection{Figure Asset Index}
+
+The six main-text figure requirements and two appendix assets are specified in
+\texttt{paper/FIGURE\_REQUIREMENTS.md}.  Every empirical figure must be
+generated from preserved machine-readable artifacts.  Architecture graphics
+must match the evaluated commit and use dotted or dashed arrows for
+training-only paths.

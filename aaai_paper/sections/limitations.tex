@@ -1,0 +1,43 @@
+\section{Limitations}
+
+\paragraph{The current evidence is architectural.}
+The latest source implements the universal action path, option-specific repair,
+stage isolation, and offline gate evaluator, but the local paper workspace does
+not contain the official-checkpoint parity report, Gate O/R artifacts, or
+UniversalVLOG simulator rollouts.  We therefore do not claim improved task
+success, transfer, or efficiency.  Legacy Qwen-OFT graph/critic experiments are
+not evidence for this flow-matching model.
+
+\paragraph{A discrete code is not automatically a skill.}
+Future-action quantization may encode magnitude, task identity, embodiment, or
+other incidental variation.  Event-balanced sampling reduces duration bias but
+does not turn event strata into option labels or prove semantic structure.
+Even balanced use does not establish behavioral meaning.  Correct-vs-wrong/
+shuffled flow interventions, hard-router recovery, per-embodiment usage,
+rollout timelines, and matched action effects are required before interpreting
+codes as useful modes; semantic skill names remain unsupported.
+
+\paragraph{Persistence is imposed and can amplify errors.}
+The controller uses fixed duration bounds and router-logit hysteresis.  It has
+no learned termination, value function, or graph.  Retaining a bad router
+decision can be worse than per-query selection, while maximum-age reselection
+does not guarantee a change.  No-persistence and fixed-duration controls are
+therefore essential, and decision-age must be distinguished from environment
+steps.
+
+\paragraph{Cross-embodiment sharing remains a hypothesis.}
+Native adapters avoid mapping one robot through another robot's physical
+coordinates, but a shared DiT and codebook can still forget the base
+embodiment or separate codes by dataset identity.  Balanced replay, base
+retention, per-embodiment Gate O/R, and code--embodiment mutual information are
+needed.  The current configuration covers RoboCasa-GR1 and LIBERO; real-robot
+safety, rate limits, collision handling, and watchdogs remain outside this
+study.
+
+\paragraph{Systems cost and stochastic evaluation.}
+Option conditioning adds a token, residual projections, posterior/router
+modules, and stateful controller bookkeeping.  The flow expert is stochastic
+unless sampling noise is fixed.  Exact overhead, memory, batching behavior, and
+variance must be measured under a locked deployment protocol.  Controller
+state also depends on correct environment and episode identifiers; missing
+resets can invalidate an evaluation.

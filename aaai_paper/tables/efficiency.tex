@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lcccc}
+\toprule
+Method & Added params & Latency & Peak memory & Throughput \\
+\midrule
+Fusion-off shared flow & -- & P & P & P \\
+U0-native adapters & P & P & P & P \\
+Persistent VLOG-VLA & P & P & P & P \\
+\bottomrule
+\end{tabular}
+\caption{Matched deployment profile.  P requires measured values with hardware,
+precision, batch size, number of flow steps, and warm-up.}
+\label{tab:efficiency}
+\end{table}

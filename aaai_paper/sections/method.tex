@@ -1,0 +1,288 @@
+\section{Method}
+
+VLOG-VLA augments a shared flow-matching VLA with a discrete controller state.
+We describe the active \texttt{QwenUniversalVLOG} implementation at commit
+\texttt{4111898}; graph, critic, learned termination, and legacy Qwen-OFT paths
+are not part of this method.
+
+\subsection{Problem Formulation}
+
+At policy query \(t\), an embodiment \(e\) supplies images \(o_t\), instruction
+\(\ell\), and normalized native robot state \(q_t^e\).  The policy predicts an
+action chunk
+\begin{equation}
+    A_t^e=a^e_{t:t+H-1}\in\mathbb{R}^{H\times d_a^e}.
+    \label{eq:action-chunk}
+\end{equation}
+The environment may execute only a prefix before the next query.  We distinguish
+the decoder horizon \(H\), primitive environment steps, and option age measured
+in policy decisions.
+
+The latent controller chooses
+\begin{equation}
+    z_t\in\{1,\ldots,K\},\qquad
+    C=\{c_k\in\mathbb{R}^{d_z}\}_{k=1}^{K},
+    \label{eq:option-space}
+\end{equation}
+and may retain \(z_t\) across several action chunks.  A code is called an
+\emph{option} only in this operational sense; no semantic skill label is
+assumed.
+
+\input{figures/overall_architecture}
+
+\subsection{Shared Flow-Matching Action Expert}
+
+A Qwen3-VL backbone encodes images and language into
+\(H_t^{\mathrm{vl}}\in\mathbb{R}^{L\times d_{\mathrm{vl}}}\).  The action
+expert contains one shared DiT, surrounded by native embodiment boundaries:
+\begin{align}
+    S_t^e &= E_s^e(q_t^e)\in\mathbb{R}^{N_s^e\times d_D},\\
+    U_\tau^e &= E_a^e(\widetilde A_\tau^e,\tau)
+        \in\mathbb{R}^{H\times d_D},\\
+    \widehat V_\tau^e &= D_a^e\!\left(
+        \operatorname{DiT}_{\theta}
+        (S_t^e,U_\tau^e,H_t^{\mathrm{vl}},\tau)\right).
+    \label{eq:native-boundaries}
+\end{align}
+Here \(E_s^e,E_a^e,D_a^e\) are small native state encoder, action encoder,
+and action decoder modules; \(d_D\) is the shared DiT width.  The base
+RoboCasa-GR1 embodiment retains the historical GR00T module paths.  Other
+embodiments map directly from native normalized coordinates to \(d_D\); for
+example, LIBERO's seven-dimensional action is not embedded through the
+twenty-nine-dimensional GR1 physical action space.
+
+For a demonstrated action \(A^e\), noise \(\epsilon\), and interpolation time
+\(\tau\in[0,1]\), the code constructs
+\begin{equation}
+    \widetilde A_\tau^e=(1-\tau)\epsilon+\tau A^e,\qquad
+    V^{e,*}=A^e-\epsilon,
+    \label{eq:flow-path}
+\end{equation}
+and minimizes a masked flow-matching loss
+\begin{equation}
+    \mathcal{L}_{\mathrm{FM}}
+    =\frac{\sum_{h=1}^{H}m_h
+      \|\widehat V_{\tau,h}^e-V_h^{e,*}\|_2^2}
+      {\sum_{h=1}^{H}m_h},
+    \label{eq:flow-loss}
+\end{equation}
+where \(m_h\) excludes padding for shorter chunks.  Inference integrates the
+predicted velocity for a configured number of Euler steps.
+
+\subsection{Universal Option Discovery}
+
+The controller aggregates the current multimodal representation, native state
+tokens, and an embodiment embedding:
+\begin{equation}
+    s_t=\operatorname{Agg}\!\left(
+       P_{\mathrm{vl}}H_t^{\mathrm{vl}},
+       \operatorname{mean}(S_t^e)\right)
+       +P_e r_e \in\mathbb{R}^{d_z}.
+    \label{eq:state-summary}
+\end{equation}
+During training only, future native actions are passed through the same
+embodiment action encoder.  Let
+\(F_t^e=E_a^e(A_t^e,\tau{=}0)\) and let \(m_h\) be the action mask.  The
+posterior uses four masked temporal summaries:
+\begin{equation}
+\begin{aligned}
+    \mu_t &= \operatorname{mean}_{m} F_t^e,\qquad
+    \sigma_t = \operatorname{std}_{m} F_t^e,\\
+    \Delta_t &= F_{t,h_{\mathrm{last}}}^e - F_{t,h_{\mathrm{first}}}^e,\\
+    \eta_t &= \max_{h:m_hm_{h+1}=1}\left|F_{t,h+1}^e-F_{t,h}^e\right|.
+\end{aligned}
+\label{eq:temporal-summary}
+\end{equation}
+The original mean path is preserved for checkpoint compatibility, while a
+zero-initialized dynamics projection learns from
+\([\sigma_t;\Delta_t;\eta_t]\).  A posterior produces
+\begin{equation}
+    \begin{aligned}
+    y_t&=q_\phi\!\left(s_t,
+       \mu_t,\sigma_t,\Delta_t,\eta_t\right),\\
+    k_t^+&=\arg\min_k\|y_t-c_k\|_2^2.
+    \end{aligned}
+    \label{eq:future-posterior}
+\end{equation}
+The straight-through quantized vector is
+\begin{equation}
+    \bar c_t=y_t+\operatorname{sg}(c_{k_t^+}-y_t).
+    \label{eq:straight-through}
+\end{equation}
+Codebook and commitment losses train the quantizer.  A motion decoder predicts
+the pooled encoded future action from \([s_t;\bar c_t]\).  A differentiable
+soft-assignment histogram \(\bar q\) is regularized with an entropy floor,
+\begin{equation}
+    \mathcal{L}_{\mathrm{use}}
+    =
+    \left[\rho_H\log K-H(\bar q)\right]_+^2,
+    \label{eq:usage-entropy-floor}
+\end{equation}
+which discourages collapse without forcing every batch to use options
+uniformly.  A cosine separation penalty discourages nearly identical code
+vectors.
+
+To reduce duration bias during oracle discovery, the implementation can
+classify native action chunks into coarse temporal-change strata.  Class zero
+denotes low motion; other classes correspond to configured action-dimension
+groups, such as arms, hands, and waist for RoboCasa-GR1 or translation,
+rotation, and gripper for LIBERO.  These strata are never option labels.  They
+produce mixed inverse-frequency sample weights
+\begin{equation}
+    w_i=(1-\eta_{\mathrm{bal}})+\eta_{\mathrm{bal}}
+    \frac{(n_{g_i}+1)^{-\alpha}}
+    {\mathbb{E}_j[(n_{g_j}+1)^{-\alpha}]},
+    \label{eq:event-balance}
+\end{equation}
+clipped by a configured maximum.  The weights apply to the VQ, commitment,
+motion, and differentiable usage terms in event-balanced oracle stages.
+
+The deployment router sees no future action:
+\begin{equation}
+    \begin{aligned}
+    p_\psi(k\mid s_t)
+      &=\operatorname{softmax}(R_\psi(s_t,C))_k,\\
+    \mathcal{L}_{R}
+      &=\frac{\sum_i \omega_i[-\log p_\psi(k_i^+\mid s_i)]}
+      {\sum_i\omega_i}.
+    \end{aligned}
+    \label{eq:router-loss}
+\end{equation}
+When router balancing is enabled, \(\omega_i\) uses the same checkpointed
+inverse-frequency form over posterior option IDs; otherwise \(\omega_i=1\).
+Training and evaluation keep the oracle posterior and the hard deployment
+router distinct; a soft mixture is not substituted for the routed option when
+measuring deployment action loss.
+
+\subsection{Option-Specific Action Conditioning}
+
+A central design requirement is that changing the code can change the action
+expert.  In repair mode, the conditioner first computes
+\begin{equation}
+    x_k=P_z(\operatorname{LN}(c_k)),
+    \label{eq:option-projection}
+\end{equation}
+using a bias-free option-only projection.  State, embodiment, and learned
+projection biases are excluded from this path, preventing a common residual
+adapter from passing the oracle-vs-base test while ignoring option identity.
+The conditioner produces
+\begin{align}
+    [\gamma_k;\beta_k]&=W_f x_k,\\
+    U_{\tau,k}^{e\prime}
+      &=U_\tau^e+\rho\left[
+      \tanh(\gamma_k)\odot\operatorname{LN}(U_\tau^e)
+      +\tanh(\beta_k)\right],\\
+    u_k^{\mathrm{opt}}&=\rho\tanh(W_o x_k),
+    \label{eq:option-conditioner}
+\end{align}
+where the final FiLM and option-token projections are zero initialized and
+\(\rho\) is a fixed residual scale.  With fusion disabled, the base embodiment
+uses exactly its historical token sequence.  With fusion enabled, the DiT
+receives state tokens, an embodiment token for non-base embodiments, the option
+token \(u_k^{\mathrm{opt}}\), learned future queries, and conditioned noisy
+action tokens.
+
+\input{figures/option_conditioning}
+
+The option intervention is paired.  Base, oracle, wrong, shuffled, and hard
+router passes reuse the same observation, target, action mask, \(\tau\), and
+\(\epsilon\).  Let
+\(\mathcal{L}_{0},\mathcal{L}_{+},\mathcal{L}_{-}\) denote fusion-off,
+oracle-option, and guaranteed-wrong-option flow losses.  We use
+\begin{align}
+    \mathcal{L}_{\mathrm{imp}}
+      &=\left[m_{\mathrm{imp}}
+         +\mathcal{L}_{+}-\mathcal{L}_{0}\right]_+,\\
+    \mathcal{L}_{\mathrm{cf}}
+      &=\left[m_{\mathrm{cf}}\operatorname{sg}(\mathcal{L}_{0})
+         +\mathcal{L}_{+}-\mathcal{L}_{-}\right]_+ .
+    \label{eq:paired-losses}
+\end{align}
+The first term prevents code conditioning from being rewarded by merely
+worsening the base; the second requires the correct code to outperform a
+different code by a base-relative margin.
+
+\subsection{Persistent Semi-Markov Controller}
+
+Each rollout stream \(i\) stores
+\begin{equation}
+    M_t^i=(z_t^i,d_t^i,\mathrm{episode}_t^i),
+    \label{eq:controller-state}
+\end{equation}
+where \(d_t^i\) is option age in policy decisions.  A changed episode identifier
+clears the active code, age, and cached previous chunk.  Otherwise, the router
+candidate \(\tilde z_t=\arg\max_k R_\psi(s_t,C)_k\) is processed as follows:
+\begin{equation}
+z_t=
+\begin{cases}
+\tilde z_t, & \text{after reset},\\
+z_{t-1}, & d_{t-1}<d_{\min},\\
+\tilde z_t, & d_{t-1}\ge d_{\max},\\
+\tilde z_t, &
+R_{\tilde z_t}-R_{z_{t-1}}>\delta
+\ \land\ \tilde z_t\ne z_{t-1},\\
+z_{t-1}, & \text{otherwise}.
+\end{cases}
+\label{eq:controller-rule}
+\end{equation}
+At \(d_{\max}\) the controller \emph{reselects}; it need not force a different
+code.  Age resets only when the active code changes.  This rule implements
+cross-query persistence without a learned termination or value model.
+
+\input{figures/option_persistence}
+
+\subsection{Staged Optimization and Evidence Gates}
+
+The active training schedule separates gradient paths:
+\begin{description}
+    \item[U0-base:] diagnostic only; all parameters frozen, VLOG disabled.
+    \item[U0-native:] train non-base native adapters and the embodiment
+    embedding while VLOG remains disabled; the LIBERO configuration names this
+    stage \texttt{u0\_libero}.
+    \item[U1-oracle:] freeze Qwen, the shared DiT, native adapters, and router;
+    train the aggregator, posterior, codebook, motion decoder, and conditioner.
+    \item[U2-router:] freeze every module except the router.  Ordinary steps use
+    only router cross-entropy; periodic diagnostics evaluate the hard routed
+    option through the fixed action expert.
+    \item[U3-joint:] keep Qwen frozen and jointly tune the shared DiT, native
+    adapters, conditioner, option modules, and router with conservative
+    learning rates.
+\end{description}
+
+For U1/U3, the implemented objective is
+\begin{equation}
+\begin{split}
+    \mathcal{L}={}&
+      \lambda_{\mathrm{FM}}\mathcal{L}_{+}
+      +\lambda_{\mathrm{VQ}}\mathcal{L}_{\mathrm{VQ}}
+      +\lambda_{\mathrm{com}}\mathcal{L}_{\mathrm{com}}\\
+      &+\lambda_{\mathrm{use}}\mathcal{L}_{\mathrm{use}}
+      +\lambda_{\mathrm{sep}}\mathcal{L}_{\mathrm{sep}}
+      +\lambda_{\mathrm{mot}}\mathcal{L}_{\mathrm{mot}}\\
+      &+\lambda_{\mathrm{cf}}\mathcal{L}_{\mathrm{cf}}
+      +\lambda_{\mathrm{imp}}\mathcal{L}_{\mathrm{imp}}
+      +\mathbb{1}_{\mathrm{U3}}\lambda_R\mathcal{L}_R .
+    \label{eq:total-objective}
+\end{split}
+\end{equation}
+Counterfactual frequency is indexed by optimizer step rather than raw forward
+calls, and repeated flow samples are disabled in U2 because router-only
+optimization has no FM objective.
+
+\input{figures/training_objectives}
+
+U1 advances only if Gate O shows a positive correct-vs-wrong and
+correct-vs-shuffled gap, non-collapsed use, a nonzero but bounded residual, and
+no degradation relative to the fusion-off base.  U2 advances only if Gate R
+shows that the hard router recovers active codes and remains close to oracle
+action loss.  These are paired offline mechanism gates, not rollout results.
+
+\subsection{Inference}
+
+At deployment, future actions and the posterior are absent.  Qwen3-VL and the
+native state adapter produce current features, the hard router proposes a code,
+the per-environment controller updates its persistent state, and the selected
+code conditions every Euler velocity evaluation of the shared flow expert.
+The native decoder returns a normalized action chunk in embodiment coordinates.
+The deployment wrapper must supply stable environment and episode identifiers
+so controller state cannot leak across rollout streams or episodes.

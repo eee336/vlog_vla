@@ -1,0 +1,22 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.16\textwidth}p{0.52\textwidth}p{0.20\textwidth}}
+\toprule
+Item & Required immutable record & Current status \\
+\midrule
+Source & Commit, branch, dirty diff, applied patch & \texttt{4111898}; paper edits local \\
+Configuration & Resolved model/stage, active losses, freeze map, command & Pending run artifact \\
+Data & Dataset hash/version, tasks, split, normalization, masks & Pending \\
+Training & Seeds, logs, optimizer steps, checkpoints, selection rule & Pending \\
+Gate audit & Fixed subset, FM repeats, thresholds, raw JSON & Pending \\
+Evaluation & Simulator, episode seeds, reset/crash state, raw records & Pending \\
+Qualitative & Videos, option timeline, deterministic selection manifest & Pending \\
+Environment & Package lock, hardware, precision, determinism settings & Pending \\
+Aggregation & Script revision, command, output, and hash & Pending \\
+\bottomrule
+\end{tabular}
+\caption{Artifact chain required before replacing any quantitative placeholder.}
+\label{tab:reproducibility}
+\end{table*}

@@ -1,0 +1,25 @@
+\begin{figure*}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering
+\textbf{FIGURE PLACEHOLDER F1: UniversalVLOG architecture}\\[0.45em]
+\textbf{Left:} native RoboCasa/LIBERO observations, instruction, state, and
+embodiment ID. \quad
+\textbf{Center:} shared Qwen3-VL and shared flow-matching DiT, surrounded by
+native state/action adapters.\\[0.25em]
+\textbf{Upper training-only branch:} encoded future native actions
+\(\rightarrow\) posterior \(\rightarrow\) VQ codebook. \quad
+\textbf{Inference branch:} current-context router \(\rightarrow\)
+per-environment persistent option.\\[0.25em]
+\textbf{Action boundary:} explicit option token + bounded residual FiLM on
+noisy action tokens \(\rightarrow\) native action decoder.\\[0.25em]
+Use gray for pretrained/shared modules, blue for trainable option modules,
+purple for native adapters, orange dashed arrows for training-only inputs, and
+green for persistent controller state.}}
+\caption{\textbf{VLOG-VLA overview.}  One Qwen3-VL backbone and one
+flow-matching DiT are shared across embodiments; small native adapters preserve
+each robot's state and action coordinates.  Future actions supervise the
+posterior only during training.  At inference, a current-context router and
+per-environment controller select a persistent code that enters the action
+expert through an option token and action-token FiLM.}
+\label{fig:architecture}
+\end{figure*}

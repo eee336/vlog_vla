@@ -1,0 +1,24 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{p{0.22\textwidth}cccccccc}
+\toprule
+Variant & VQ & Option token & FiLM & Opt.-only & CF/Imp. & Persist. & Success & Gate O/R \\
+\midrule
+Fusion-off base & No & No & No & -- & No & No & P & -- \\
+Option-independent adapter & No & Yes & Yes & No & No & No & P & -- \\
+Oracle conditioner & Yes & Yes & Yes & Yes & Yes & No & offline & P/-- \\
+No option token & Yes & No & Yes & Yes & Yes & Rule & P & P/P \\
+No FiLM & Yes & Yes & No & Yes & Yes & Rule & P & P/P \\
+Legacy context conditioner & Yes & Yes & Yes & No & Yes & Rule & P & P/P \\
+No CF / no improve & Yes & Yes & Yes & Yes & No & Rule & P & P/P \\
+Per-query router & Yes & Yes & Yes & Yes & Yes & No & P & P/P \\
+Persistent VLOG-VLA & Yes & Yes & Yes & Yes & Yes & Rule & P & P/P \\
+\bottomrule
+\end{tabular}
+\caption{Required component attribution.  P denotes a verified-result
+placeholder; CF/Imp.\ denotes paired counterfactual and improve losses.
+The oracle row is an offline diagnostic rather than a deployable policy.}
+\label{tab:ablation-results}
+\end{table*}

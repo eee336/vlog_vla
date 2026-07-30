@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lcccccccc}
+\toprule
+Variant & Active & Effective & Dominant & Event NMI & Wrong gap & Shuffle gap & Router acc. & Duration \\
+\midrule
+U1 oracle & P & P & P & P & P & P & -- & -- \\
+U2 hard router & P & P & P & P & P & P & P & per query \\
+Fixed duration & P & P & P & P & P & P & P & P \\
+Persistent controller & P & P & P & P & P & P & P & P \\
+\bottomrule
+\end{tabular}
+\caption{Joint option diagnostics.  Active options must exceed the declared
+minimum share, effective options are entropy-based, and Event NMI is reported
+against a shuffled-code baseline when event strata are available.  Gaps are
+paired relative flow-loss gaps; duration is measured in policy decisions and
+must also be converted to environment steps.  P denotes pending verified data.}
+\label{tab:option-statistics}
+\end{table*}

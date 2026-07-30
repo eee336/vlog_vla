@@ -1,0 +1,24 @@
+Vision-language-action (VLA) policies often predict a fixed action chunk at
+each query.  The chunk supplies a local execution horizon, but it does not
+expose a discrete controller state that can be retained across later queries.
+We present \textbf{VLOG-VLA}, a persistent latent-option interface for a shared
+flow-matching VLA action expert.  The framework preserves one Qwen3-VL backbone
+and one GR00T-style DiT across robot embodiments, while small native
+state/action adapters handle different control dimensions.  During training, a
+future-action posterior summarizes encoded demonstrations with masked mean,
+variation, endpoint displacement, and peak adjacent change before quantizing
+them into a shared option codebook; at deployment, a current-context router
+predicts the option without future information.  The selected code enters the
+action expert through an explicit option token and bounded residual FiLM on
+noisy action tokens.  A repair-mode conditioner removes state-, embodiment-,
+and bias-only bypasses, so any improvement over a wrong or shuffled code must
+pass through option identity.
+A per-environment semi-Markov controller retains the routed code using minimum
+duration, maximum-age reselection, and router-logit hysteresis.  Training is
+separated into base-parity, native-adapter, event-balanced oracle-option,
+balanced router-only, and low-rate joint stages, with paired flow-matching
+interventions defining falsifiable option and router gates.  Graph, critic,
+learned termination, and reinforcement-learning objectives are intentionally
+excluded from the current method.  \textbf{[RESULT PLACEHOLDER: insert
+protocol-matched RoboCasa/LIBERO success, event-balanced Gate O/R statistics,
+and measured overhead after verified runs.]}

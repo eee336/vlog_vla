@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{p{0.18\textwidth}p{0.12\textwidth}p{0.12\textwidth}p{0.15\textwidth}p{0.16\textwidth}p{0.15\textwidth}}
+\toprule
+Policy family & Action generator & Discrete latent & Explicit cross-query state & Termination / duration & Low-level sharing \\
+\midrule
+Direct VLA & Token, regression, or flow & Typically no & No explicit option & Not applicable & Shared policy \\
+ACT & Chunk decoder & Continuous CVAE & No explicit option & Temporal ensemble & Shared decoder \\
+Diffusion/flow policy & Diffusion or flow & Usually no & No explicit option & Not applicable & Shared denoiser/expert \\
+Classical option policy & Varies & Option ID & Yes & Learned or specified & Method dependent \\
+Quantized latent action & Varies & Yes & Method dependent & Often implicit & Shared or varied \\
+VLOG-VLA & Shared flow DiT & VQ option & Per-environment memory & Rule: \(d_{\min}/d_{\max}\) + hysteresis & One Qwen/DiT; native adapters \\
+\bottomrule
+\end{tabular}
+\caption{Mechanism-level positioning; no performance comparison is implied.
+The current VLOG-VLA does not use learned termination, an option critic, or
+separate action experts per code.}
+\label{tab:method-comparison}
+\end{table*}

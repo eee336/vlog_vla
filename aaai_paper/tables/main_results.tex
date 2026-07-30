@@ -1,0 +1,21 @@
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccccc}
+\toprule
+Method & RoboCasa & Spatial & Object & Goal & LIBERO-10 & Macro \\
+\midrule
+Official flow base & P & -- & -- & -- & -- & P \\
+Universal fusion-off / U0-native & P & P & P & P & P & P \\
+Option-independent adapter & P & P & P & P & P & P \\
+Per-query routed option & P & P & P & P & P & P \\
+Fixed-duration option & P & P & P & P & P & P \\
+Persistent VLOG-VLA & P & P & P & P & P & P \\
+\bottomrule
+\end{tabular}
+\caption{Simulator success under protocol-matched evaluation.  P is a result
+placeholder; each cell requires successes/episodes, training seeds, uncertainty,
+checkpoint rule, and raw per-episode evidence.  Dashes are not applicable.}
+\label{tab:main-results}
+\end{table*}

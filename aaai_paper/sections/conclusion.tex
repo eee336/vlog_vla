@@ -1,0 +1,22 @@
+\section{Conclusion}
+
+VLOG-VLA studies whether a shared flow-matching VLA benefits from a discrete
+controller state that persists beyond one action chunk.  The latest
+\texttt{QwenUniversalVLOG} implementation keeps one Qwen3-VL backbone and one
+GR00T-style DiT across embodiments, maps native state/action coordinates through
+small adapters, discovers a vector-quantized future-action code, routes that
+code from current context, and injects it through an option token and bounded
+action-token FiLM.  A per-environment semi-Markov rule supplies explicit
+cross-query persistence.
+
+The design is intentionally evidence gated.  Option-only conditioning removes
+code-independent shortcuts; paired flow interventions test option identity;
+router-only training preserves the oracle mapping; and rollouts must compare
+fusion-off, capacity, per-query, and fixed-duration alternatives.  Graph,
+critic, learned termination, and RL claims are outside the current method.
+
+\textbf{[RESULT PLACEHOLDER: summarize verified Gate O/R outcomes, paired
+RoboCasa/LIBERO task results, and overhead.]}
+Until those artifacts are available, the defensible contribution is the
+source-audited interface and its falsification protocol, not a claim of superior
+robot control.

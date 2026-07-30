@@ -1,0 +1,51 @@
+\section{Related Work}
+
+\paragraph{Vision-language-action policies.}
+RT-1 and RT-2 establish scalable visual-language-conditioned robot control
+~\citep{brohan2022rt1,brohan2023rt2}; OpenVLA provides an adaptable open VLA
+~\citep{kim2024openvla}.  Recent generalist systems combine large multimodal
+backbones with continuous action experts and broader embodiment coverage
+~\citep{black2024pi0,intelligence2025pi05,bjorck2025groot,shukor2025smolvla}.
+StarVLA exposes these design choices through a common backbone/action-head
+interface~\citep{community2026starvla}.  VLOG-VLA is not a new foundation
+model: it is an option overlay on a shared Qwen3-VL/flow-action path.
+
+\paragraph{Action-sequence generation.}
+ACT predicts action chunks using a conditional latent-variable model
+~\citep{zhao2023act}.  Diffusion Policy generates actions by conditional
+denoising~\citep{chi2023diffusion}, while \(\pi_0\) and GR00T-style policies
+use continuous flow-based action generation
+~\citep{black2024pi0,bjorck2025groot}.  These methods model the action
+distribution and local horizon.  VLOG-VLA retains the flow-matching objective
+and asks a different question: whether one discrete decision should condition
+several successive flow-generated chunks.
+
+\paragraph{Options and latent skills.}
+Classical options formalize temporally extended behavior through an initiation
+set, intra-option policy, and termination rule~\citep{sutton1999options}.
+Option-Critic learns selection and termination from return
+~\citep{bacon2017optioncritic}.  Skill-learning methods instead infer latent
+behavior variables from offline data, for example through unsupervised
+diversity or latent priors~\citep{eysenbach2019diayn,pertsch2021spirl}.
+VLOG-VLA uses hierarchical imitation rather than option-value RL: future
+demonstrated actions supervise a discrete posterior, current context supervises
+a router, and persistence is imposed by an explicit controller.
+
+\paragraph{Quantized action abstraction.}
+VQ-BeT quantizes action modes for behavior generation~\citep{lee2024vqbet},
+and QueST learns quantized skill abstractions for continuous control
+~\citep{mete2024quest}.  A quantized code, however, is not automatically
+action-relevant or temporally extended.  Our evaluation therefore treats
+code usage, correct-vs-wrong paired flow loss, router recovery, cross-query
+duration, and rollout success as separate requirements.
+
+\input{tables/method_comparison}
+
+\paragraph{Positioning.}
+VLOG-VLA combines quantized future-action supervision with a shared
+flow-matching action expert and explicit cross-query state.  Unlike a
+mixture-of-experts, options do not select independent action networks.  Unlike
+Option-Critic, the current method has neither a learned value function nor a
+learned termination objective.  Its novelty claim is correspondingly narrow:
+an option-specific interface and evidence-gated protocol for testing persistent
+latent control in a multi-embodiment VLA.

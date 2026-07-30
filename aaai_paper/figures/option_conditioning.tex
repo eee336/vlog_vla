@@ -1,0 +1,21 @@
+\begin{figure*}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering
+\textbf{FIGURE PLACEHOLDER F2: Option-specific conditioning and paired
+flow interventions}\\[0.45em]
+\textbf{Panel (a):} code \(c_k\) \(\rightarrow\) bias-free option projection
+\(\rightarrow\) bounded \(\gamma_k,\beta_k\) and option token; show zero
+initialization and fixed \(\rho\).\\[0.25em]
+\textbf{Panel (b):} DiT sequence
+\([\,\text{state},\text{optional embodiment},\text{option},
+\text{future queries},\text{noisy actions}\,]\).\\[0.25em]
+\textbf{Panel (c):} one observation/target/mask shared across base, correct,
+wrong, shuffled, and hard-router branches with identical \(\tau\) and noise;
+label \(\mathcal{L}_0,\mathcal{L}_+,\mathcal{L}_-,
+\mathcal{L}_{\mathrm{shuffle}},\mathcal{L}_{R}\).}}
+\caption{\textbf{Causal option test at the action-expert boundary.}
+Repair-mode conditioning removes state-, embodiment-, and bias-only shortcuts.
+Paired branches reuse flow time and noise, so differences isolate the selected
+code rather than stochastic flow sampling.}
+\label{fig:option-conditioning}
+\end{figure*}

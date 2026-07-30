@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{0.25\columnwidth}p{0.22\columnwidth}p{0.45\columnwidth}}
+\toprule
+Item & Status & Evidence boundary \\
+\midrule
+Universal source & Audited & Commit \texttt{4111898}; Qwen/shared DiT, native adapters, event-balanced VQ/router, option conditioning, controller. \\
+CPU tests & Specified & Local runtime lacks \texttt{pytest}; no new raw test log generated in this paper pass. \\
+Official checkpoint & Pending & Strict-load, full parity, GPU memory/time not present locally. \\
+Gate O/R & Pending & Evaluator exists; no training-machine JSON recovered. \\
+Simulator results & Pending & No UniversalVLOG RoboCasa/LIBERO rollout artifact recovered. \\
+Legacy graph/critic & Excluded & Different architecture; cannot populate current results. \\
+\bottomrule
+\end{tabular}
+\caption{Evidence status for this draft.  Source presence is not promoted to
+benchmark evidence.}
+\label{tab:evaluation-status}
+\end{table}
