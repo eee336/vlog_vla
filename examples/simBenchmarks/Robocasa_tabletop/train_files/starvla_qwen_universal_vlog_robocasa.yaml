@@ -67,6 +67,32 @@ framework:
     improve_margin: 0.0
     commitment_cost: 0.25
     codebook_cosine_margin: 0.2
+    # Collapse control for U1. Event classes only reweight chunks; they are
+    # never used as option targets, so option semantics remain latent.
+    usage_entropy_floor_ratio: 0.75
+    event_balance:
+      enabled: true
+      mix: 0.5
+      power: 0.5
+      max_weight: 5.0
+      min_motion: 0.02
+      groups:
+        # GR1 = left/right arm (14), hands (12), waist (3).
+        robocasa_gr1:
+          - [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+          - [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+          - [26, 27, 28]
+        libero:
+          - [0, 1, 2]
+          - [3, 4, 5]
+          - [6]
+    # U2 uses inverse-sqrt posterior-code frequency weights. This addresses
+    # label duration imbalance without changing the frozen U1 codebook.
+    router_balance:
+      enabled: true
+      power: 0.5
+      mix: 1.0
+      max_weight: 5.0
     losses:
       lambda_fm: 1.0
       lambda_vq: 1.0

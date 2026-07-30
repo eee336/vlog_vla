@@ -58,8 +58,10 @@ shared DiT parameters, then reduced to one weighted scalar loss.
 ## Option path
 
 Training-only posterior input is the current aggregated state plus future
-actions *after* the native action encoder.  The router never receives future
-actions.  An option enters the action expert as:
+actions *after* the native action encoder. It uses masked mean, standard
+deviation, endpoint difference and maximum adjacent change, so short
+manipulation events are not erased by temporal averaging. The router never
+receives future actions. An option enters the action expert as:
 
 1. one explicit option token;
 2. residual FiLM on noisy action tokens.
@@ -67,6 +69,12 @@ actions.  An option enters the action expert as:
 The sequence with fusion is
 `[state, embodiment, option, future_query, noisy_action]`.  Correct/base/wrong
 FM calls share observations, targets, masks, sampled `t` and sampled noise.
+
+U1 event strata are computed from temporal change in native action-dimension
+groups and only reweight VQ/discovery losses. They never determine an Option
+ID. The differentiable usage objective is an entropy floor, not a demand for
+uniform code usage. U2 uses checkpointed inverse-frequency weights for
+posterior-code CE while keeping U1 and the action expert frozen.
 
 ## Stages
 
@@ -95,8 +103,9 @@ Graph, critic, learned termination and RL losses are not part of this version.
 ## Evidence still required on the training machine
 
 The committed unit tests cover module shapes, causal option sensitivity,
-controller isolation/reset, fusion-off action-head parity, paired noise/time,
-and action-mask reduction.  The following are deliberately not claimed here:
+temporal summaries, event classification and weighting, controller
+isolation/reset, fusion-off action-head parity, paired noise/time, and
+action-mask reduction. The following are deliberately not claimed here:
 
 - official 4B checkpoint strict-load result;
 - GPU forward/backward/predict memory and timing;

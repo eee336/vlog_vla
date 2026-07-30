@@ -32,6 +32,12 @@ from .option_conditioner import OptionConditioner
 from .persistent_option_router import PersistentOptionRouter
 from .semimarkov_controller import SemiMarkovController
 from .state_aggregator import StateAggregator
+from .temporal_option_discovery import (
+    FutureActionPosterior,
+    RunningClassBalancer,
+    classify_action_events,
+    weighted_mean,
+)
 from .universal_adapters import (
     EmbodimentAdapterBank,
     EmbodimentSpec,
@@ -110,6 +116,32 @@ class QwenUniversalVLOGDefaultConfig(QwenGR00TDefaultConfig):
             "improve_margin": 0.0,
             "commitment_cost": 0.25,
             "codebook_cosine_margin": 0.2,
+            # Penalize collapse only below this fraction of log(K).  Unlike
+            # KL-to-uniform, this does not force long motion phases to split
+            # artificially across synonymous codes.
+            "usage_entropy_floor_ratio": 0.75,
+            # Event strata reweight U1 examples but never supervise option IDs.
+            "event_balance": {
+                "enabled": False,
+                "mix": 0.5,
+                "power": 0.5,
+                "max_weight": 5.0,
+                "min_motion": 0.02,
+                "groups": {
+                    "robocasa_gr1": [
+                        list(range(0, 14)),
+                        list(range(14, 26)),
+                        list(range(26, 29)),
+                    ],
+                    "libero": [[0, 1, 2], [3, 4, 5], [6]],
+                },
+            },
+            "router_balance": {
+                "enabled": False,
+                "power": 0.5,
+                "mix": 1.0,
+                "max_weight": 5.0,
+            },
             "losses": {
                 "lambda_fm": 1.0,
                 "lambda_vq": 1.0,
@@ -130,34 +162,6 @@ def _masked_mean(tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (tokens * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
 
 
-class FutureActionPosterior(nn.Module):
-    """Training-only q(z | current state, encoded future native action)."""
-
-    def __init__(self, state_dim: int, action_token_dim: int, option_dim: int) -> None:
-        super().__init__()
-        self.state_proj = nn.Linear(state_dim, option_dim)
-        self.action_proj = nn.Linear(action_token_dim, option_dim)
-        self.fuse = nn.Sequential(
-            nn.Linear(option_dim * 2, option_dim),
-            nn.GELU(),
-            nn.Linear(option_dim, option_dim),
-        )
-
-    def forward(
-        self,
-        state_feature: torch.Tensor,
-        future_action_tokens: torch.Tensor,
-        action_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        action_summary = _masked_mean(future_action_tokens, action_mask)
-        return self.fuse(
-            torch.cat(
-                [self.state_proj(state_feature), self.action_proj(action_summary)],
-                dim=-1,
-            )
-        )
-
-
 class UniversalVLOGCore(nn.Module):
     """Shared option discovery/router modules; no critic, graph or learned termination."""
 
@@ -169,11 +173,16 @@ class UniversalVLOGCore(nn.Module):
         num_options: int,
         commitment_cost: float,
         codebook_cosine_margin: float = 0.2,
+        usage_entropy_floor_ratio: float = 0.75,
+        router_balance: Mapping | None = None,
     ) -> None:
         super().__init__()
         self.num_options = int(num_options)
         self.option_dim = int(option_dim)
         self.codebook_cosine_margin = float(codebook_cosine_margin)
+        if not 0.0 <= float(usage_entropy_floor_ratio) <= 1.0:
+            raise ValueError("usage_entropy_floor_ratio must be in [0, 1]")
+        self.usage_entropy_floor_ratio = float(usage_entropy_floor_ratio)
         self.vl_projection = nn.Sequential(
             nn.LayerNorm(int(vl_dim)), nn.Linear(int(vl_dim), int(option_dim))
         )
@@ -186,6 +195,14 @@ class UniversalVLOGCore(nn.Module):
         self.posterior = FutureActionPosterior(option_dim, dit_dim, option_dim)
         self.codebook = LatentOptionCodebook(num_options, option_dim, commitment_cost)
         self.router = PersistentOptionRouter(option_dim, option_dim, num_options)
+        router_balance = router_balance or {}
+        self.router_balance_enabled = bool(router_balance.get("enabled", False))
+        self.router_balancer = RunningClassBalancer(
+            num_options,
+            power=float(router_balance.get("power", 0.5)),
+            mix=float(router_balance.get("mix", 1.0)),
+            max_weight=float(router_balance.get("max_weight", 5.0)),
+        )
         self.motion_decoder = nn.Sequential(
             nn.Linear(option_dim * 2, dit_dim),
             nn.GELU(),
@@ -219,16 +236,19 @@ class UniversalVLOGCore(nn.Module):
         state_feature: torch.Tensor,
         future_action_tokens: torch.Tensor,
         action_mask: torch.Tensor,
+        sample_weights: torch.Tensor | None = None,
     ) -> dict:
         posterior_embedding = self.posterior(
             state_feature, future_action_tokens, action_mask
         )
         option, option_idx, vq_loss, commitment_loss = self.codebook(
-            posterior_embedding
+            posterior_embedding, sample_weights=sample_weights
         )
         target_motion = _masked_mean(future_action_tokens, action_mask)
         pred_motion = self.motion_decoder(torch.cat([state_feature, option], dim=-1))
-        motion_loss = F.mse_loss(pred_motion, target_motion.detach())
+        motion_loss = weighted_mean(
+            (pred_motion - target_motion.detach()).square(), sample_weights
+        )
         one_hot = F.one_hot(option_idx, num_classes=self.num_options).to(option.dtype)
         hard_usage = one_hot.mean(dim=0)
         # The hard nearest-code histogram is useful for logging but carries no
@@ -236,9 +256,28 @@ class UniversalVLOGCore(nn.Module):
         distances = torch.cdist(
             posterior_embedding[:, None, :], self.codebook.codebook.weight[None]
         ).squeeze(1)
-        soft_usage = torch.softmax(-distances, dim=-1).mean(dim=0)
-        uniform = torch.full_like(soft_usage, 1.0 / self.num_options)
-        usage_loss = F.kl_div((soft_usage + 1e-8).log(), uniform, reduction="sum")
+        soft_assignment = torch.softmax(-distances, dim=-1)
+        if sample_weights is None:
+            soft_usage = soft_assignment.mean(dim=0)
+        else:
+            weights = sample_weights.to(
+                device=soft_assignment.device, dtype=soft_assignment.dtype
+            ).reshape(-1, 1)
+            soft_usage = (soft_assignment * weights).sum(dim=0) / weights.sum().clamp_min(
+                1e-8
+            )
+        usage_entropy = -(
+            soft_usage * (soft_usage + 1e-8).log()
+        ).sum()
+        entropy_floor = self.usage_entropy_floor_ratio * np.log(self.num_options)
+        usage_loss = F.relu(
+            torch.as_tensor(
+                entropy_floor,
+                device=usage_entropy.device,
+                dtype=usage_entropy.dtype,
+            )
+            - usage_entropy
+        ).square()
         separation_loss = self.codebook_separation_loss()
         return {
             "state_feature": state_feature,
@@ -252,6 +291,7 @@ class UniversalVLOGCore(nn.Module):
             "motion_loss": motion_loss,
             "usage": hard_usage,
             "soft_usage": soft_usage,
+            "soft_usage_entropy": usage_entropy,
         }
 
     def route(self, state_feature: torch.Tensor) -> dict:
@@ -265,6 +305,28 @@ class UniversalVLOGCore(nn.Module):
             "probs": probs,
             "logits": logits,
         }
+
+    def router_loss(
+        self,
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        *,
+        update_counts: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return CE and per-sample weights for the deployable router."""
+
+        target = target.detach().to(torch.long)
+        if self.router_balance_enabled:
+            weights = self.router_balancer.weights(
+                target, update=bool(update_counts)
+            ).to(logits.dtype)
+        else:
+            weights = torch.ones(
+                target.shape[0], device=logits.device, dtype=logits.dtype
+            )
+        per_sample = F.cross_entropy(logits, target, reduction="none")
+        loss = (per_sample * weights).sum() / weights.sum().clamp_min(1e-8)
+        return loss, weights
 
 
 class UniversalFlowmatchingActionHead(FlowmatchingActionHead):
@@ -570,6 +632,11 @@ class QwenUniversalVLOG(baseframework):
         "action_model.embodiment_embedding.",
         "action_model.option_conditioner.",
     )
+    _BACKWARD_COMPATIBLE_ADDITIONS = (
+        "vlog_core.posterior.dynamics_proj.",
+        "vlog_core.router_balancer.counts",
+        "event_balancers.",
+    )
 
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()
@@ -620,7 +687,49 @@ class QwenUniversalVLOG(baseframework):
             codebook_cosine_margin=float(
                 vlog_cfg.get("codebook_cosine_margin", 0.2)
             ),
+            usage_entropy_floor_ratio=float(
+                vlog_cfg.get("usage_entropy_floor_ratio", 0.75)
+            ),
+            router_balance=vlog_cfg.get("router_balance", {}),
         )
+        event_cfg = vlog_cfg.get("event_balance", {})
+        self.event_balance_enabled = bool(event_cfg.get("enabled", False))
+        self.event_balance_min_motion = float(event_cfg.get("min_motion", 0.02))
+        configured_groups = event_cfg.get("groups", {})
+        self.event_groups: dict[str, list[list[int]]] = {}
+        self.event_balancers = nn.ModuleDict()
+        if self.event_balance_enabled:
+            for embodiment, spec in self.embodiment_specs.items():
+                raw_groups = configured_groups.get(embodiment, None)
+                if raw_groups is None:
+                    raise ValueError(
+                        "event_balance.enabled=True requires action groups for "
+                        f"embodiment {embodiment!r}"
+                    )
+                groups = [
+                    [int(index) for index in group] for group in raw_groups
+                ]
+                # Validate at construction time rather than failing midway
+                # through an expensive U1 run.
+                flat = [index for group in groups for index in group]
+                if (
+                    not flat
+                    or len(flat) != len(set(flat))
+                    or min(flat) < 0
+                    or max(flat) >= spec.action_dim
+                ):
+                    raise ValueError(
+                        f"Event groups must be non-empty, disjoint and in range "
+                        f"for {embodiment}: {groups}; "
+                        f"action_dim={spec.action_dim}"
+                    )
+                self.event_groups[embodiment] = groups
+                self.event_balancers[embodiment] = RunningClassBalancer(
+                    len(groups) + 1,
+                    power=float(event_cfg.get("power", 0.5)),
+                    mix=float(event_cfg.get("mix", 0.5)),
+                    max_weight=float(event_cfg.get("max_weight", 5.0)),
+                )
         self.controller = SemiMarkovController(
             d_min=int(vlog_cfg.d_min),
             d_max=int(vlog_cfg.d_max),
@@ -789,6 +898,26 @@ class QwenUniversalVLOG(baseframework):
     def _fusion_enabled(self) -> bool:
         return self._vlog_enabled() and bool(self.config.framework.vlog.fusion_enabled)
 
+    def _event_balance(
+        self,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor,
+        embodiment: str,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        if not self._vlog_enabled() or not self.event_balance_enabled:
+            return None, None, None
+        event_idx, event_energy = classify_action_events(
+            actions,
+            action_mask,
+            self.event_groups[embodiment],
+            self.event_balance_min_motion,
+        )
+        weights = self.event_balancers[embodiment].weights(
+            event_idx,
+            update=self.training and self.vlog_train_stage in {"u1_oracle", "u3_joint"},
+        )
+        return weights, event_idx, event_energy
+
     def _group_forward(
         self,
         vl_hidden: torch.Tensor,
@@ -808,6 +937,9 @@ class QwenUniversalVLOG(baseframework):
         actions, action_mask = self._action_group(
             examples, indices, embodiment, vl.device, vl.dtype
         )
+        event_weights, event_idx, event_energy = self._event_balance(
+            actions, action_mask, embodiment
+        )
         is_router_only = (
             self._vlog_enabled() and self.vlog_train_stage == "u2_router"
         )
@@ -823,6 +955,9 @@ class QwenUniversalVLOG(baseframework):
         state = self._repeat(state, repeats)
         actions = self._repeat(actions, repeats)
         action_mask = self._repeat(action_mask, repeats)
+        event_weights = self._repeat(event_weights, repeats)
+        event_idx = self._repeat(event_idx, repeats)
+        event_energy = self._repeat(event_energy, repeats)
 
         base = None
         t = None
@@ -871,7 +1006,10 @@ class QwenUniversalVLOG(baseframework):
                 actions, zero_t, embodiment
             )
             oracle = self.vlog_core.discover(
-                state_feature, future_tokens, action_mask
+                state_feature,
+                future_tokens,
+                action_mask,
+                sample_weights=event_weights,
             )
         if self.vlog_train_stage == "u1_oracle":
             # Router is explicitly off in U1.  Compute only detached diagnostics
@@ -880,7 +1018,12 @@ class QwenUniversalVLOG(baseframework):
                 routed = self.vlog_core.route(state_feature.detach())
         else:
             routed = self.vlog_core.route(state_feature)
-        router_loss = F.cross_entropy(routed["logits"], oracle["option_idx"].detach())
+        router_loss, router_weights = self.vlog_core.router_loss(
+            routed["logits"],
+            oracle["option_idx"],
+            update_counts=self.training
+            and self.vlog_train_stage in {"u2_router", "u3_joint"},
+        )
 
         if self.vlog_train_stage == "u2_router":
             router_correct = (
@@ -891,6 +1034,7 @@ class QwenUniversalVLOG(baseframework):
                 "router_loss": router_loss.detach(),
                 "router_accuracy": router_correct.mean().detach(),
                 "router_confidence": routed["probs"].max(dim=-1).values.mean().detach(),
+                "router_weight_max": router_weights.max().detach(),
                 "vq_loss": oracle["vq_loss"].detach(),
                 "option_entropy": (
                     -(routed["probs"] * (routed["probs"] + 1e-8).log()).sum(-1).mean()
@@ -1066,6 +1210,7 @@ class QwenUniversalVLOG(baseframework):
             "vq_loss": oracle["vq_loss"].detach(),
             "commitment_loss": oracle["commitment_loss"].detach(),
             "usage_loss": oracle["usage_loss"].detach(),
+            "soft_usage_entropy": oracle["soft_usage_entropy"].detach(),
             "codebook_separation_loss": oracle[
                 "codebook_separation_loss"
             ].detach(),
@@ -1084,6 +1229,20 @@ class QwenUniversalVLOG(baseframework):
                 -(oracle["usage"] * (oracle["usage"] + 1e-8).log()).sum()
             ).detach(),
             "dead_options": (oracle["usage"] < 1e-4).sum().to(torch.float32).detach(),
+            "event_weight_max": (
+                event_weights.max().detach()
+                if event_weights is not None
+                else torch.ones((), device=vl.device)
+            ),
+            "event_active": (
+                torch.as_tensor(
+                    torch.unique(event_idx).numel(),
+                    device=vl.device,
+                    dtype=torch.float32,
+                )
+                if event_idx is not None
+                else torch.zeros((), device=vl.device)
+            ),
             "counterfactual_triggered": torch.tensor(
                 float(trigger_cf), device=vl.device, dtype=torch.float32
             ),
@@ -1266,6 +1425,16 @@ class QwenUniversalVLOG(baseframework):
                     "Qwen/tokenizer/action config. " + " | ".join(details)
                 )
             strict = False  # only UniversalVLOG additions may be absent
+        elif strict:
+            # `from_pretrained` is strict, whereas trainer warm-starts are not.
+            # Permit only the explicitly zero/safely initialized keys added by
+            # the duration-bias refactor; every older core key remains audited.
+            missing = set(self.state_dict()) - keys
+            if missing and all(
+                key.startswith(self._BACKWARD_COMPATIBLE_ADDITIONS)
+                for key in missing
+            ):
+                strict = False
         try:
             return super().load_state_dict(state_dict, strict=strict, assign=assign)
         except TypeError:  # torch versions before the assign= argument

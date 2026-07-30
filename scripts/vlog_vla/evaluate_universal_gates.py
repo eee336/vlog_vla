@@ -98,6 +98,53 @@ def _mean_over_repeats(values: list[torch.Tensor]) -> torch.Tensor:
     return torch.stack(values, dim=0).mean(dim=0)
 
 
+def _usage_statistics(counts: torch.Tensor, min_share: float) -> dict:
+    counts = counts.to(torch.float64)
+    probabilities = counts / counts.sum().clamp_min(1.0)
+    nonzero = probabilities > 0
+    entropy = -(
+        probabilities[nonzero] * probabilities[nonzero].log()
+    ).sum()
+    return {
+        "counts": counts.to(torch.long).tolist(),
+        "active_raw": int(nonzero.sum()),
+        "active_effective": int((probabilities >= float(min_share)).sum()),
+        "dominant_share": float(probabilities.max()),
+        "entropy": float(entropy),
+        "effective_number": float(entropy.exp()),
+    }
+
+
+def _normalized_mutual_information(
+    first: torch.Tensor, second: torch.Tensor
+) -> float:
+    first = first.reshape(-1).to(torch.long)
+    second = second.reshape(-1).to(torch.long)
+    if first.numel() == 0 or first.numel() != second.numel():
+        return 0.0
+    rows = int(first.max()) + 1
+    columns = int(second.max()) + 1
+    joint = torch.bincount(
+        first * columns + second, minlength=rows * columns
+    ).reshape(rows, columns).to(torch.float64)
+    joint /= joint.sum().clamp_min(1.0)
+    row = joint.sum(dim=1, keepdim=True)
+    column = joint.sum(dim=0, keepdim=True)
+    expected = row @ column
+    valid = joint > 0
+    mutual_information = (
+        joint[valid] * (joint[valid] / expected[valid]).log()
+    ).sum()
+    row_nonzero = row > 0
+    column_nonzero = column > 0
+    row_entropy = -(row[row_nonzero] * row[row_nonzero].log()).sum()
+    column_entropy = -(
+        column[column_nonzero] * column[column_nonzero].log()
+    ).sum()
+    denominator = (row_entropy * column_entropy).sqrt().clamp_min(1e-12)
+    return float(mutual_information / denominator)
+
+
 @torch.inference_mode()
 def evaluate(args: argparse.Namespace) -> dict:
     checkpoint = Path(args.checkpoint).resolve()
@@ -130,6 +177,8 @@ def evaluate(args: argparse.Namespace) -> dict:
     measurements: dict[str, list[float]] = defaultdict(list)
     oracle_counts = torch.zeros(model.vlog_core.num_options, dtype=torch.long)
     router_counts = torch.zeros_like(oracle_counts)
+    event_ids: list[torch.Tensor] = []
+    event_option_ids: list[torch.Tensor] = []
     processed_batches = 0
     processed_observations = 0
 
@@ -174,6 +223,12 @@ def evaluate(args: argparse.Namespace) -> dict:
             oracle = model.vlog_core.discover(
                 state_feature, future_tokens, action_mask
             )
+            if model.event_balance_enabled:
+                _, group_event_idx, _ = model._event_balance(
+                    actions, action_mask, embodiment
+                )
+                event_ids.append(group_event_idx.detach().cpu())
+                event_option_ids.append(oracle["option_idx"].detach().cpu())
             routed = model.vlog_core.route(state_feature)
             hard_router_option = model.vlog_core.codebook.codebook(
                 routed["option_idx"]
@@ -357,8 +412,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         raise RuntimeError("No audit observations were produced by the dataloader")
 
     summaries = {key: _summary(value) for key, value in measurements.items()}
-    oracle_probs = oracle_counts.float() / oracle_counts.sum().clamp_min(1)
-    router_probs = router_counts.float() / router_counts.sum().clamp_min(1)
+    oracle_usage = _usage_statistics(oracle_counts, args.min_option_share)
+    router_usage = _usage_statistics(router_counts, args.min_option_share)
     normalized_codes = F.normalize(
         model.vlog_core.codebook.codebook.weight.detach().float(), dim=-1
     )
@@ -368,15 +423,42 @@ def evaluate(args: argparse.Namespace) -> dict:
     )
     pairwise_cosine = code_cosine[off_diagonal].cpu().numpy()
     option_usage = {
-        "oracle_counts": oracle_counts.tolist(),
-        "router_counts": router_counts.tolist(),
-        "oracle_active": int((oracle_counts > 0).sum()),
-        "router_active": int((router_counts > 0).sum()),
-        "oracle_dominant_share": float(oracle_probs.max()),
-        "router_dominant_share": float(router_probs.max()),
+        "minimum_effective_share": args.min_option_share,
+        "oracle": oracle_usage,
+        "router": router_usage,
+        # Backward-compatible fields now deliberately mean effective activity.
+        "oracle_counts": oracle_usage["counts"],
+        "router_counts": router_usage["counts"],
+        "oracle_active": oracle_usage["active_effective"],
+        "router_active": router_usage["active_effective"],
+        "oracle_active_raw": oracle_usage["active_raw"],
+        "router_active_raw": router_usage["active_raw"],
+        "oracle_effective_number": oracle_usage["effective_number"],
+        "router_effective_number": router_usage["effective_number"],
+        "oracle_dominant_share": oracle_usage["dominant_share"],
+        "router_dominant_share": router_usage["dominant_share"],
         "codebook_pairwise_cosine_mean": float(pairwise_cosine.mean()),
         "codebook_pairwise_cosine_max": float(pairwise_cosine.max()),
     }
+    event_alignment = {"available": False}
+    if event_ids:
+        all_events = torch.cat(event_ids)
+        all_options = torch.cat(event_option_ids)
+        generator = torch.Generator().manual_seed(args.seed)
+        shuffled_options = all_options.index_select(
+            0, torch.randperm(all_options.numel(), generator=generator)
+        )
+        observed_nmi = _normalized_mutual_information(all_events, all_options)
+        shuffled_nmi = _normalized_mutual_information(all_events, shuffled_options)
+        event_alignment = {
+            "available": True,
+            "num_observations": int(all_events.numel()),
+            "event_counts": torch.bincount(all_events).tolist(),
+            "observed_nmi": observed_nmi,
+            "shuffled_nmi": shuffled_nmi,
+            "nmi_gap": observed_nmi - shuffled_nmi,
+            "scope": "event IDs are balancing strata, not option labels",
+        }
 
     correct_mean = summaries["fm_correct"]["mean"]
     wrong_gap = summaries["gap_wrong_minus_correct"]
@@ -408,6 +490,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         and summaries["gap_base_minus_correct"]["mean"] >= 0.0,
         "oracle_options_active": option_usage["oracle_active"]
         >= args.min_active_options,
+        "oracle_effective_number": option_usage["oracle_effective_number"]
+        >= args.min_effective_options,
         "oracle_not_dominated": option_usage["oracle_dominant_share"]
         <= args.max_dominant_share,
         "fusion_residual_nonzero": summaries["fusion_residual"]["p50"]
@@ -421,12 +505,18 @@ def evaluate(args: argparse.Namespace) -> dict:
         and summaries["fusion_residual_ratio"]["p95"]
         <= args.max_residual_ratio_p95,
     }
+    if event_alignment["available"]:
+        gate_o_checks["event_option_nmi_above_shuffle"] = (
+            event_alignment["nmi_gap"] >= args.min_event_option_nmi_gap
+        )
     gate_r_checks = {
         "enough_observations": processed_observations >= args.min_observations,
         "router_accuracy": summaries["router_correct"]["mean"] is not None
         and summaries["router_correct"]["mean"] >= args.min_router_accuracy,
         "router_options_active": option_usage["router_active"]
         >= args.min_active_options,
+        "router_effective_number": option_usage["router_effective_number"]
+        >= args.min_effective_options,
         "router_not_dominated": option_usage["router_dominant_share"]
         <= args.max_dominant_share,
         "router_fm_not_worse_than_base": summaries["gap_base_minus_router"][
@@ -470,6 +560,7 @@ def evaluate(args: argparse.Namespace) -> dict:
             "seed": args.seed,
         },
         "option_usage": option_usage,
+        "event_alignment": event_alignment,
         "metrics": summaries,
         "derived": {
             "relative_wrong_gap": relative_wrong,
@@ -480,6 +571,9 @@ def evaluate(args: argparse.Namespace) -> dict:
             "min_relative_wrong_gap": args.min_relative_wrong_gap,
             "min_relative_shuffle_gap": args.min_relative_shuffle_gap,
             "min_active_options": args.min_active_options,
+            "min_option_share": args.min_option_share,
+            "min_effective_options": args.min_effective_options,
+            "min_event_option_nmi_gap": args.min_event_option_nmi_gap,
             "max_dominant_share": args.max_dominant_share,
             "min_residual_p50": args.min_residual_p50,
             "max_residual_ratio_p95": args.max_residual_ratio_p95,
@@ -515,6 +609,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-relative-wrong-gap", type=float, default=0.05)
     parser.add_argument("--min-relative-shuffle-gap", type=float, default=0.02)
     parser.add_argument("--min-active-options", type=int, default=4)
+    parser.add_argument(
+        "--min-option-share",
+        type=float,
+        default=0.01,
+        help="An option is active only if it owns at least this sample share.",
+    )
+    parser.add_argument("--min-effective-options", type=float, default=3.0)
+    parser.add_argument("--min-event-option-nmi-gap", type=float, default=0.02)
     parser.add_argument("--max-dominant-share", type=float, default=0.80)
     parser.add_argument("--min-residual-p50", type=float, default=1.0e-4)
     parser.add_argument("--max-residual-ratio-p95", type=float, default=0.25)
@@ -530,6 +632,8 @@ def main() -> None:
         raise ValueError("batch-size must be >=2 for shuffled-option intervention")
     if args.fm_repeats < 1 or args.num_batches < 1:
         raise ValueError("fm-repeats and num-batches must be positive")
+    if not 0.0 < args.min_option_share < 1.0:
+        raise ValueError("min-option-share must be in (0,1)")
     report = evaluate(args)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

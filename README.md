@@ -86,6 +86,11 @@ U2 的监督目标只是 posterior/codebook 产生的 oracle option ID。普通 
 option 做一次 paired base/router FM 诊断。`repeated_diffusion_steps` 在 U2
 自动按 1 处理，避免复制相同 router 标签。
 
+当前 U1 使用时间统计 posterior 与 event-balanced discovery：事件分层仅调节
+样本权重，并不充当 Option 标签；codebook 使用熵下限而不是强制均匀。U2 使用
+累计 posterior-code 频数的 class-balanced CE。实现、兼容性与修复命令见
+[`docs/OPTION_DISCOVERY_REFACTOR.md`](docs/OPTION_DISCOVERY_REFACTOR.md)。
+
 ## 安装与 CPU 测试
 
 本仓库不捆绑 CUDA/PyTorch 轮子。先使用已验证可运行 StarVLA 的环境：
@@ -145,6 +150,10 @@ python scripts/vlog_vla/evaluate_universal_gates.py \
 报告只具有 offline E2 证据级别，不替代 Core-6 rollout。旧的
 `scripts/vlog_vla/analyze_options.py` 会生成合成占位序列，不能用于 UniversalVLOG
 Gate 或论文证据。
+
+Gate 中的 active Option 按至少 1% 样本占比计算，不再把只出现一次的 code
+计为有效 Option；同时报告 \(N_{\mathrm{eff}}=\exp(H)\)。启用 event balance
+的 checkpoint 还必须通过 Option–event NMI 高于随机打乱的检查。
 
 ### U1 conditioner repair
 

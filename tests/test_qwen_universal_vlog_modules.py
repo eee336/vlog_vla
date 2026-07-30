@@ -7,6 +7,11 @@ torch = pytest.importorskip("torch")
 
 from starVLA.model.vlog_vla.option_conditioner import OptionConditioner
 from starVLA.model.vlog_vla.semimarkov_controller import SemiMarkovController
+from starVLA.model.vlog_vla.temporal_option_discovery import (
+    RunningClassBalancer,
+    classify_action_events,
+    masked_temporal_statistics,
+)
 from starVLA.model.vlog_vla.universal_adapters import (
     EmbodimentAdapterBank,
     EmbodimentSpec,
@@ -306,7 +311,11 @@ def test_usage_balance_is_differentiable_not_a_hard_histogram_only():
         option_dim=6,
         num_options=4,
         commitment_cost=0.25,
+        usage_entropy_floor_ratio=1.0,
     )
+    with torch.no_grad():
+        core.codebook.codebook.weight[0].zero_()
+        core.codebook.codebook.weight[1:].fill_(10.0)
     state = torch.randn(3, 6)
     future = torch.randn(3, 5, 8)
     mask = torch.ones(3, 5, dtype=torch.bool)
@@ -316,6 +325,50 @@ def test_usage_balance_is_differentiable_not_a_hard_histogram_only():
     assert core.codebook.codebook.weight.grad is not None
     assert torch.isfinite(core.codebook.codebook.weight.grad).all()
     assert core.codebook.codebook.weight.grad.norm().item() > 0
+
+
+def test_temporal_statistics_preserve_brief_events_and_ignore_padding():
+    values = torch.tensor(
+        [
+            [[0.0], [0.0], [1.0], [0.0], [99.0]],
+            [[2.0], [2.0], [2.0], [2.0], [2.0]],
+        ]
+    )
+    mask = torch.tensor(
+        [[True, True, True, True, False], [True, True, True, True, True]]
+    )
+    mean, std, endpoint, max_change = masked_temporal_statistics(values, mask)
+    torch.testing.assert_close(mean[:, 0], torch.tensor([0.25, 2.0]))
+    assert std[0, 0] > 0
+    assert std[1, 0] == 0
+    assert endpoint[0, 0] == 0
+    assert max_change[0, 0] == 1
+    assert max_change[1, 0] == 0
+
+
+def test_event_classifier_detects_short_gripper_transition():
+    actions = torch.zeros(2, 8, 7)
+    # A long, small translation change.
+    actions[0, :, 0] = torch.linspace(0.0, 0.7, 8)
+    # One brief gripper transition; mean pooling alone would dilute it.
+    actions[1, 4:, 6] = 1.0
+    mask = torch.ones(2, 8, dtype=torch.bool)
+    event, energy = classify_action_events(
+        actions,
+        mask,
+        groups=[[0, 1, 2], [3, 4, 5], [6]],
+        min_motion=0.01,
+    )
+    assert event.tolist() == [1, 3]
+    assert energy[1, 2] > energy[1, :2].max()
+
+
+def test_running_class_balancer_upweights_rare_examples():
+    balancer = RunningClassBalancer(2, power=0.5, mix=1.0, max_weight=10.0)
+    balancer.counts.copy_(torch.tensor([100.0, 1.0], dtype=torch.float64))
+    weights = balancer.weights(torch.tensor([0, 1]), update=False)
+    assert weights[1] > weights[0]
+    torch.testing.assert_close(weights.mean(), torch.tensor(1.0))
 
 
 def test_codebook_separation_penalizes_collapsed_codes():
@@ -443,3 +496,33 @@ def test_base_checkpoint_loader_rejects_missing_core_key(monkeypatch):
     broken.pop("qwen_vl_interface.dummy")
     with pytest.raises(RuntimeError, match="Refusing lossy GR00T warm-start"):
         model.load_state_dict(broken, strict=False)
+
+
+def test_strict_legacy_universal_load_allows_only_refactor_additions(monkeypatch):
+    pytest.importorskip("diffusers")
+    from types import SimpleNamespace
+
+    import starVLA.model.vlog_vla.qwen_universal_vlog as universal_module
+
+    class FakeVLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dummy = torch.nn.Parameter(torch.ones(1))
+            self.model = SimpleNamespace(config=SimpleNamespace(hidden_size=5))
+
+    monkeypatch.setattr(universal_module, "get_vlm_model", lambda config: FakeVLM())
+    model = universal_module.QwenUniversalVLOG(_small_framework_config())
+    legacy = dict(model.state_dict())
+    expected_missing = {
+        "vlog_core.posterior.dynamics_proj.weight",
+        "vlog_core.router_balancer.counts",
+    }
+    for key in expected_missing:
+        legacy.pop(key)
+    incompatible = model.load_state_dict(legacy, strict=True)
+    assert set(incompatible.missing_keys) == expected_missing
+
+    broken = dict(legacy)
+    broken.pop("vlog_core.posterior.action_proj.weight")
+    with pytest.raises(RuntimeError, match="Missing key"):
+        model.load_state_dict(broken, strict=True)
